@@ -1,4 +1,4 @@
-# HFTA (High-Frequency Trading Analysis)
+# HFTA (High-Frequency Timeseries Analysis)
 
 这是一个基于Streamlit开发的高频交易分析仪表板，用于展示和分析黑色金属冶炼行业的经济指标。
 
