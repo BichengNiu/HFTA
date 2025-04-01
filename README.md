@@ -31,10 +31,6 @@ pip install -r requirements.txt
 streamlit run dashboard_fixed.py
 ```
 
-## 数据来源
-
-- 黑色金属冶炼行业数据
-- 经济指标数据
 
 ## 技术栈
 
