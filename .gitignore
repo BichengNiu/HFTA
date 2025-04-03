@@ -79,6 +79,18 @@ results/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# 敏感信息文件
+*key*.txt
+*token*.txt
+*secret*.txt
+*password*.txt
+*credential*.txt
+sshkey.txt
+*.pem
+*.p12
+*.pfx
+*.key
+
 # Optional - depending on your project
 # Uncomment if you don't want to track specific files
 # credentials.json
