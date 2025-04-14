@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 # print("DEBUG: Script execution started.") # REMOVE DEBUG
 """
 超参数和变量逐步前向选择脚本。
@@ -20,6 +21,8 @@ import traceback
 from typing import Tuple, List, Dict, Union # 添加 Tuple
 import unicodedata # <-- 新增导入
 from statsmodels.tsa.stattools import adfuller # <--- 新增 ADF 检验导入
+from sklearn.decomposition import PCA # <-- 新增：导入 PCA
+from sklearn.impute import SimpleImputer # <-- 新增：导入 SimpleImputer
 
 # --- 尝试导入自定义模块 ---
 try:
@@ -34,6 +37,9 @@ warnings.filterwarnings('ignore')
 matplotlib.use('Agg')
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
+
+# --- 全局执行标志 (防止重复运行) ---
+_run_tuning_executed = False
 
 # --- 新增：是否使用 Log(Yt) - Log(Yt-52) 转换 (根据用户要求设为 True) ---
 # *** MODIFIED: Set USE_LOG_YOY_TRANSFORM to True based on user request ***
@@ -54,7 +60,7 @@ FINAL_PLOT_FILE = os.path.join('dfm_result', 'final_nowcast_comparison.png')
 EXCEL_OUTPUT_FILE = os.path.join('dfm_result', 'result.xlsx') # Renamed output file
 START_DATE = '2020-01-01'
 END_DATE = '2024-12-31'
-N_ITER_FIXED = 15
+N_ITER_FIXED = 2 # 临时修改为 2 次迭代用于快速测试
 
 # --- OOS 验证日期 ---
 TRAIN_END_DATE = '2024-06-28' # 修正为 6 月底最后一个周五
@@ -176,6 +182,8 @@ def evaluate_dfm_params(
     validation_end: str,
     target_freq: str,
     train_end_date: str,
+    target_mean_original: float, # <-- 新增：原始目标变量均值
+    target_std_original: float,  # <-- 新增：原始目标变量标准差
     max_iter: int = 50,
 ) -> Tuple[float, float, float, float, bool]: # 返回 (is_rmse, oos_rmse, is_hit_rate, oos_hit_rate, is_svd_error)
     """评估给定变量和参数下的 DFM。
@@ -264,11 +272,11 @@ def evaluate_dfm_params(
              obs_std[zero_std_cols] = 1.0
         current_data_std = (current_data - obs_mean) / obs_std
         
-        target_mean_for_rescaling = obs_mean.get(target_variable, np.nan)
-        target_std_for_rescaling = obs_std.get(target_variable, np.nan)
-        if pd.isna(target_mean_for_rescaling) or pd.isna(target_std_for_rescaling):
-            print(f"    错误: 无法获取目标变量 {target_variable} 的均值/标准差进行反标准化")
-            return np.inf, np.inf, -np.inf, -np.inf, False
+        # --- 修改: 使用传入的原始目标变量统计量进行反标准化 ---
+        if pd.isna(target_mean_original) or pd.isna(target_std_original) or target_std_original == 0:
+             print(f"    错误: 传入的原始目标变量统计量无效 (Mean: {target_mean_original}, Std: {target_std_original})，无法反标准化。")
+             return np.inf, np.inf, -np.inf, -np.inf, False
+        # --- 结束修改 ---
 
         std_all_nan_cols = current_data_std.columns[current_data_std.isna().all()].tolist()
         if std_all_nan_cols:
@@ -320,7 +328,9 @@ def evaluate_dfm_params(
         lambda_target = lambda_matrix[lambda_df.index.get_loc(target_variable), :]
 
         nowcast_standardized = factors_sm.to_numpy() @ lambda_target 
-        nowcast_orig_values = nowcast_standardized * target_std_for_rescaling + target_mean_for_rescaling
+        # --- 修改: 使用传入的原始目标变量统计量进行反标准化 ---
+        nowcast_orig_values = nowcast_standardized * target_std_original + target_mean_original
+        # --- 结束修改 ---
         nowcast_series_orig = pd.Series(nowcast_orig_values, index=factors_sm.index, name='Nowcast_Orig')
 
         target_original_series = original_target_series_full.copy()
@@ -412,6 +422,7 @@ def evaluate_dfm_params(
 def analyze_and_save_final_results(
     run_output_dir: str, # 确保类型提示正确
     timestamp_str: str, # 确保类型提示正确
+    excel_output_path: str, # <-- 新增: Excel 文件路径参数
     all_data_full, 
     data_for_analysis, 
     target_variable,
@@ -421,10 +432,23 @@ def analyze_and_save_final_results(
     var_type_map, 
     best_avg_hit_rate_tuning: float, 
     best_avg_mae_tuning: float,    # Note: Name kept as mae, but value is RMSE
-    total_runtime_seconds
+    total_runtime_seconds,
+    factor_contributions=None,
+    final_transform_log=None,
+    pca_results_df=None, # <-- 新增: PCA 结果
+    contribution_results_df=None # <-- 新增: 因子贡献结果
 ):
-    """分析最终模型结果，计算指标，生成图表，并将所有内容保存到指定目录下的带时间戳的文件中。"""
-    print("\n--- 开始最终结果分析与保存 --- ")
+    """分析最终DFM结果并保存到Excel和图中。"""
+    print("\n--- 开始最终结果分析与保存 ---")
+    # --- 再次确认传递的参数 ---
+    print(f"  分析保存函数接收参数:")
+    print(f"    run_output_dir: {run_output_dir}")
+    print(f"    timestamp_str: {timestamp_str}")
+    print(f"    excel_output_path: {excel_output_path}")
+    print(f"    最终变量数: {len(best_variables)}")
+    print(f"    最终参数: {best_params}")
+    # print(f"    最终转换日志: {final_transform_log}") # Optional: 可取消注释查看
+    # --- 结束确认 ---
 
     # --- **再次确认**: 确保输出目录存在 ---
     if not run_output_dir or not isinstance(run_output_dir, str):
@@ -439,7 +463,6 @@ def analyze_and_save_final_results(
     # --- **结束再次确认** ---
 
     # --- 动态生成输出文件完整路径 (再次确认基于 run_output_dir) --- 
-    excel_output_file = os.path.join(run_output_dir, f"result_{timestamp_str}.xlsx")
     final_plot_file = os.path.join(run_output_dir, f"final_nowcast_comparison_{timestamp_str}.png")
     factor_plot_base_dir = run_output_dir # 因子图的基础目录
     heatmap_file = os.path.join(run_output_dir, f"factor_loadings_heatmap_{timestamp_str}.png")
@@ -551,10 +574,10 @@ def analyze_and_save_final_results(
         )
 
         # --- 写入 Excel 文件 --- 
-        print(f"将结果写入 Excel 文件: {excel_output_file}...") # 确认使用正确的 excel_output_file 变量
+        print(f"将结果写入 Excel 文件: {excel_output_path}...")
         try:
-            with pd.ExcelWriter(excel_output_file, engine='openpyxl') as writer:
-                # Sheet: Summary_Overview
+            with pd.ExcelWriter(excel_output_path, engine='openpyxl') as writer:
+                # --- 修改: Sheet: Summary_Overview (合并 Analysis_Text, PCA, Contribution) ---
                 try:
                     summary_df = pd.DataFrame({
                         'Parameter': [
@@ -563,97 +586,193 @@ def analyze_and_save_final_results(
                             f'Hit Rate (Train %){diff_label_for_metrics}', f"Final OOS RMSE{diff_label_for_metrics}",
                             f'Hit Rate (Validation %){diff_label_for_metrics}', 'Total Runtime (s)'],
                         'Value': [
-                            len(best_variables), final_k_factors, use_log_yoy, 
+                            len(best_variables), final_k_factors, use_log_yoy,
                             f"{best_avg_hit_rate_tuning:.2f}" if pd.notna(best_avg_hit_rate_tuning) else "N/A",
                             f"{best_avg_mae_tuning:.6f}" if pd.notna(best_avg_mae_tuning) else "N/A",
                             f"{hit_rate_train:.2f}" if pd.notna(hit_rate_train) else "N/A",
                             f"{final_oos_rmse:.6f}" if pd.notna(final_oos_rmse) else "N/A",
                             f"{hit_rate_validation:.2f}" if pd.notna(hit_rate_validation) else "N/A",
                             f"{total_runtime_seconds:.2f}"]})
-                    summary_df['Value'] = summary_df['Value'].astype(str) 
-                    summary_df.to_excel(writer, sheet_name='Summary_Overview', index=False) 
-                except Exception as e: print(f"写入 Summary_Overview 时出错: {e}")
+                    summary_df['Value'] = summary_df['Value'].astype(str)
+                    summary_df.to_excel(writer, sheet_name='Summary_Overview', index=False)
+                    current_row = writer.sheets['Summary_Overview'].max_row
+                    
+                    # 追加 Analysis Text 内容 (分行写入)
+                    start_row_analysis = current_row + 2 # 加 2 留出空行
+                    analysis_lines = interpretation_text.strip().split('\n')
+                    analysis_df = pd.DataFrame({'Analysis Text': analysis_lines})
+                    analysis_df.to_excel(writer, sheet_name='Summary_Overview', 
+                                           startrow=start_row_analysis, index=False, header=True)
+                    current_row = writer.sheets['Summary_Overview'].max_row
+                    print(f"  Summary_Overview 和 Analysis_Text 已合并写入 Sheet: 'Summary_Overview'")
 
-                # Sheet: Analysis_Text
-                try:
-                    analysis_text_df = pd.DataFrame({'Analysis': [interpretation_text]})
-                    analysis_text_df.to_excel(writer, sheet_name='Analysis_Text', index=False)
-                except Exception as e: print(f"写入 Analysis_Text 时出错: {e}")
-
-                # Sheet: Final_Factor_Loadings
-                if lambda_df_final is not None:
-                    try:
-                        lambda_df_final.to_excel(writer, sheet_name='Final_Factor_Loadings', index=True)
-                    except Exception as e: print(f"写入 Final_Factor_Loadings 时出错: {e}")
-                else: print("警告: 无法写入 Final_Factor_Loadings，因为 lambda_df_final 未定义或为空。")
+                    # <-- 新增: 追加 PCA 结果 -->
+                    start_row_pca = current_row + 2 # 加 2 留出空行
+                    if pca_results_df is not None and not pca_results_df.empty:
+                        print(f"  追加 PCA 结果到 Sheet: 'Summary_Overview'...")
+                        # 添加标题行
+                        pd.DataFrame([["PCA Explained Variance"]]).to_excel(writer, sheet_name='Summary_Overview', startrow=start_row_pca-1, index=False, header=False)
+                        pca_results_df.to_excel(writer, sheet_name='Summary_Overview', startrow=start_row_pca, index=False, header=True)
+                        current_row = writer.sheets['Summary_Overview'].max_row
+                    else:
+                        print("  警告: PCA 结果不可用，无法追加到 Summary_Overview Sheet。")
+                    # <-- 结束新增 -->
+                    
+                    # <-- 新增: 追加因子贡献度结果 -->
+                    start_row_contrib = current_row + 2 # 加 2 留出空行
+                    if contribution_results_df is not None and not contribution_results_df.empty:
+                        print(f"  追加因子贡献度结果到 Sheet: 'Summary_Overview'...")
+                        # 添加标题行
+                        pd.DataFrame([["Factor Contribution to Target Variance"]]).to_excel(writer, sheet_name='Summary_Overview', startrow=start_row_contrib-1, index=False, header=False)
+                        contribution_results_df.to_excel(writer, sheet_name='Summary_Overview', startrow=start_row_contrib, index=False, header=True)
+                        print(f"  因子贡献度结果已追加写入 Sheet: 'Summary_Overview'")
+                    else:
+                        print("  警告: 因子贡献度结果不可用，无法追加到 Summary_Overview Sheet。")
+                    # <-- 结束新增 -->
+                    
+                except Exception as e: print(f"写入 Summary_Overview (合并后) 时出错: {e}")
                 
-                # Sheet: Final_Selected_Variables
+                # Sheet: Final_Selected_Variables (合并因子载荷)
                 try:
                     vars_df = pd.DataFrame(best_variables, columns=['Variable Name'])
                     cleaned_var_names_series = vars_df['Variable Name'].astype(str).str.strip()
                     normalized_lowercase_keys = cleaned_var_names_series.apply(lambda x: unicodedata.normalize('NFKC', x).strip().lower())
                     vars_df['Variable Type'] = normalized_lowercase_keys.map(var_type_map).fillna('Unknown')
-                    vars_df.to_excel(writer, sheet_name='Final_Selected_Variables', index=False)
-                except Exception as e: print(f"写入 Final_Selected_Variables 时出错: {e}")
-
-                # Sheet: Selected_Vars_Level_or_LogYoY (or specific name)
-                selected_data_sheet_name = "Selected_Vars_Original_Level" # Default if not use_log_yoy
-                try:
-                    data_to_save_sel = pd.DataFrame() # Initialize
-                    if use_log_yoy:
-                         predictors_final = [v for v in best_variables if v != target_variable]
-                         if predictors_final:
-                             logyoy_predictors = apply_log_yoy_transform(all_data_full[predictors_final])
-                             data_to_save_sel = pd.concat([logyoy_predictors, all_data_full[target_variable]], axis=1)
-                             data_to_save_sel = data_to_save_sel.reindex(columns=best_variables) 
-                             selected_data_sheet_name = "Selected_Vars_LogYoY"
-                    else:
-                         data_to_save_sel = all_data_full[best_variables].copy()
                     
-                    if not data_to_save_sel.empty:
-                         data_to_save_sel = data_to_save_sel.replace([np.inf, -np.inf], np.nan).fillna('N/A')
-                         if isinstance(data_to_save_sel.index, pd.DatetimeIndex):
-                              data_to_save_sel.index = data_to_save_sel.index.strftime('%Y-%m-%d')
-                         else: data_to_save_sel.index = data_to_save_sel.index.astype(str)
-                         data_to_save_sel.columns = data_to_save_sel.columns.astype(str)
-                         data_to_save_sel = data_to_save_sel.astype(str).reset_index()
-                         data_to_save_sel.to_excel(writer, sheet_name=selected_data_sheet_name, index=False)
-                    else: print(f"警告: 没有数据可保存到 '{selected_data_sheet_name}' sheet。")
-                except Exception as e: print(f"写入 {selected_data_sheet_name} 时出错: {e}")
+                    # <-- 新增: 添加转换信息列 -->
+                    if final_transform_log:
+                        # <-- 修改: fillna('') -->
+                        vars_df['Transformation'] = vars_df['Variable Name'].map(final_transform_log).fillna('')
+                    else:
+                        vars_df['Transformation'] = '' # <-- 修改: 保持一致用空字符串 -->
+                    # <-- 结束新增 -->
+                    
+                    # <-- 新增: 合并因子载荷 -->
+                    if lambda_df_final is not None and not lambda_df_final.empty:
+                        print("  合并因子载荷到 Final_Selected_Variables Sheet...")
+                        # 重置索引以便合并（如果 lambda_df_final 的索引是 Variable Name）
+                        loadings_to_merge = lambda_df_final.reset_index().rename(columns={'index': 'Variable Name'})
+                        # 执行左合并
+                        vars_df = pd.merge(vars_df, loadings_to_merge, on='Variable Name', how='left')
+                        
+                        # 重新排序列顺序
+                        factor_cols = [col for col in vars_df.columns if col.startswith('Factor')]
+                        # <-- 修改: 调整列顺序 -->
+                        desired_cols = ['Variable Name', 'Variable Type', 'Transformation'] + factor_cols
+                        # <-- 结束修改 -->
+                        # 确保所有期望的列都存在于DataFrame中
+                        existing_cols = [col for col in desired_cols if col in vars_df.columns]
+                        vars_df = vars_df[existing_cols]
+                    else:
+                         print("  警告: 因子载荷 (lambda_df_final) 不可用，无法合并到 Final_Selected_Variables Sheet。")
+                    # <-- 结束新增 -->
 
-                # Sheet: Final_Factors
-                try:
-                    if final_factors is not None and not final_factors.empty:
-                        factors_to_save = final_factors.copy().fillna('N/A')
-                        if isinstance(factors_to_save.index, pd.DatetimeIndex):
-                            factors_to_save.index = factors_to_save.index.strftime('%Y-%m-%d')
-                        else: factors_to_save.index = factors_to_save.index.astype(str)
-                        factors_to_save.columns = factors_to_save.columns.astype(str)
-                        factors_to_save.to_excel(writer, sheet_name='Final_Factors', index=True)
-                    else: print(f"警告: 无法写入 Final_Factors，因为 final_factors 为空或 None。")
-                except Exception as e: print(f"写入 Final_Factors 时出错: {e}")
+                    vars_df.to_excel(writer, sheet_name='Final_Selected_Variables', index=False)
+                    print(f"  已写入合并后的 Sheet: 'Final_Selected_Variables'") # 更新日志
+                except Exception as e: print(f"写入 Final_Selected_Variables (合并后) 时出错: {e}")
 
-                # Sheet: Nowcast_vs_Target
+                # <-- 新增: 生成 Selected_Vars_Transformed Sheet -->
                 try:
-                    if not common_index_final.empty:
-                        nowcast_compare_df = pd.DataFrame({
-                            f'Target{diff_label_for_metrics}': target_for_comparison.loc[common_index_final],
-                            f'Nowcast{diff_label_for_metrics}': final_nowcast_orig.loc[common_index_final]}).fillna('N/A')
-                        if isinstance(nowcast_compare_df.index, pd.DatetimeIndex):
-                            nowcast_compare_df.index = nowcast_compare_df.index.strftime('%Y-%m-%d')
-                        else: nowcast_compare_df.index = nowcast_compare_df.index.astype(str)
-                        nowcast_compare_df.columns = nowcast_compare_df.columns.astype(str)
-                        nowcast_compare_df.to_excel(writer, sheet_name='Nowcast_vs_Target', index=True)
-                    else: print(f"警告: 无法写入 Nowcast_vs_Target，因为最终 Nowcast 和目标序列没有共同索引。")
-                except Exception as e: print(f"写入 Nowcast_vs_Target 时出错: {e}")
+                    print("  生成应用变量级转换后的选定变量数据 (Selected_Vars_Transformed)...")
+                    if best_variables and not all_data_full.empty:
+                        data_subset = all_data_full[best_variables].copy()
+                        # 再次应用转换以获取用于表格的数据
+                        transformed_data_for_sheet, _ = apply_stationarity_transforms(data_subset, target_variable) 
+                        
+                        if not transformed_data_for_sheet.empty:
+                             # 格式化以便写入 Excel
+                             # <-- 修改: fillna('') -->
+                             data_to_save_transformed = transformed_data_for_sheet.copy().fillna('')
+                             if isinstance(data_to_save_transformed.index, pd.DatetimeIndex):
+                                  data_to_save_transformed.index = data_to_save_transformed.index.strftime('%Y-%m-%d')
+                             else: data_to_save_transformed.index = data_to_save_transformed.index.astype(str)
+                             data_to_save_transformed.columns = data_to_save_transformed.columns.astype(str)
+                             data_to_save_transformed = data_to_save_transformed.reset_index()
+                             data_to_save_transformed.to_excel(writer, sheet_name='Selected_Vars_Transformed', index=False)
+                             print(f"  已写入 Sheet: 'Selected_Vars_Transformed'")
+                        else:
+                             print(f"  警告: 转换后的数据为空，无法写入 'Selected_Vars_Transformed' Sheet。")
+                    else:
+                        print(f"  警告: 缺少最终变量或原始数据，无法生成 'Selected_Vars_Transformed' Sheet。")
+                except Exception as e: print(f"写入 Selected_Vars_Transformed 时出错: {e}")
+                # <-- 结束新增 -->
 
-                # Sheet: Factor_Contribution_Analysis
+                # Sheet: Nowcast_vs_Target (修改: 周度对齐，仅月末周五有 Target)
                 try:
-                    # ... (Factor Contribution Calculation as before) ...
-                    if 'contribution_df' in locals(): # Check if calculation was successful
-                         contribution_df.to_excel(writer, sheet_name='Factor_Contribution_Analysis', index=False, float_format="%.4f")
-                         print(f"  因子贡献度分析已写入 Sheet: 'Factor_Contribution_Analysis'")
-                except Exception as e_contrib: print(f"写入 Factor_Contribution_Analysis 时出错: {e_contrib}")
+                    print(f"  生成 Nowcast_vs_Target Sheet (周度对齐)...")
+                    if final_nowcast_orig is not None and not final_nowcast_orig.empty:
+                        # 开始于完整的周度 nowcast 序列
+                        nowcast_weekly_df = final_nowcast_orig.to_frame(name=f'Nowcast{diff_label_for_metrics}')
+                        
+                        # 获取原始月度目标序列，并重采样到周五频率
+                        target_col_name = f'Target{diff_label_for_metrics}'
+                        if target_variable in all_data_full.columns:
+                            original_monthly_target = all_data_full[target_variable].copy()
+                            # 重采样到周五，月度值只出现在月末周五
+                            target_resampled_weekly = original_monthly_target.resample('W-FRI').asfreq()
+                            target_resampled_weekly = target_resampled_weekly.rename(target_col_name)
+                        else:
+                            print(f"  警告: 在 all_data_full 中找不到原始目标变量 '{target_variable}'，Target 列将为空。")
+                            target_resampled_weekly = pd.Series(index=nowcast_weekly_df.index, name=target_col_name) # 创建空的 Series
+                            
+                        # 左连接：保留所有周度 nowcast 点，匹配重采样后的 target 值
+                        combined_weekly_df = nowcast_weekly_df.join(target_resampled_weekly, how='left')
+                        
+                        # <-- 修改: 直接创建稀疏的月度预测列 -->
+                        try:
+                            print("    计算并添加月末周五对应的月度预测列...")
+                            monthly_forecast_col_name = 'Monthly_Forecast'
+                            # 确保 nowcast 索引是 DatetimeIndex
+                            if not isinstance(final_nowcast_orig.index, pd.DatetimeIndex):
+                                nowcast_index_dt = pd.to_datetime(final_nowcast_orig.index)
+                            else:
+                                nowcast_index_dt = final_nowcast_orig.index
+                                
+                            # 找到每个月最后一个周五的索引
+                            last_friday_indices_m = final_nowcast_orig.groupby(nowcast_index_dt.to_period('M')).apply(lambda x: x.index.max())
+                            
+                            # 创建一个与 combined_weekly_df 索引相同的新 Series，初始为 NaN
+                            monthly_forecast_sparse = pd.Series(index=combined_weekly_df.index, dtype=float)
+                            
+                            # 只在月末周五的位置填入对应的 nowcast 值
+                            # 需要确保 last_friday_indices_m 存在于 combined_weekly_df 的索引中
+                            valid_indices = combined_weekly_df.index.intersection(last_friday_indices_m)
+                            if not valid_indices.empty:
+                                monthly_forecast_sparse.loc[valid_indices] = combined_weekly_df.loc[valid_indices, f'Nowcast{diff_label_for_metrics}']
+                            else:
+                                print("    警告: 未能在 combined_weekly_df 索引中找到有效的月末周五索引。")
+
+                            # 将新列添加到 DataFrame
+                            combined_weekly_df[monthly_forecast_col_name] = monthly_forecast_sparse
+                            print("    已添加稀疏的月度预测列。")
+                        except Exception as e_add_monthly:
+                            print(f"    警告: 添加月度预测列时出错: {e_add_monthly}")
+                            # 即使出错，也继续，只是缺少这一列
+                        # <-- 结束修改 -->
+                            
+                        # 格式化输出
+                        combined_weekly_df = combined_weekly_df.fillna('') # 用空字符串代替 N/A
+                        # <-- 确保索引转换在添加列之后 -->
+                        if isinstance(combined_weekly_df.index, pd.DatetimeIndex):
+                            combined_weekly_df.index = combined_weekly_df.index.strftime('%Y-%m-%d')
+                        else: 
+                            combined_weekly_df.index = combined_weekly_df.index.astype(str)
+                        # <-- 结束确保 -->
+                        combined_weekly_df.columns = combined_weekly_df.columns.astype(str)
+                        combined_weekly_df = combined_weekly_df.reset_index()
+                        # <-- 新增: 调整最终列顺序 -->
+                        desired_final_cols = ['index', f'Nowcast{diff_label_for_metrics}', f'Target{diff_label_for_metrics}', 'Monthly_Forecast']
+                        existing_final_cols = [col for col in desired_final_cols if col in combined_weekly_df.columns]
+                        combined_weekly_df = combined_weekly_df[existing_final_cols]
+                        # <-- 结束新增 -->
+                        combined_weekly_df.to_excel(writer, sheet_name='Nowcast_vs_Target', index=False)
+                        print(f"  已写入 Sheet: 'Nowcast_vs_Target' (周度对齐, 包含到 {final_nowcast_orig.index.max()} 的预测)")
+                    else: 
+                        print(f"警告: 无法写入 Nowcast_vs_Target，因为最终 Nowcast 序列为空或 None。")
+                except Exception as e: print(f"写入 Nowcast_vs_Target (周度对齐) 时出错: {e}")
+
+                # Sheet: Factor_Contribution_Analysis (移除，已合并)
+                # ... (removed) ...
 
                 # Sheet: Factor_Interpretation (修改解释逻辑)
                 try:
@@ -661,12 +780,15 @@ def analyze_and_save_final_results(
                     if lambda_df_final is not None and not lambda_df_final.empty:
                         print(f"  生成因子解释...")
                         num_top_vars = 5 # 定义显示多少个最高载荷变量
+                        from collections import Counter # <--- 移到循环外
+
                         for factor_col in lambda_df_final.columns:
                             loadings = lambda_df_final[factor_col].sort_values(ascending=False)
-                            
+
                             top_positive = loadings.head(num_top_vars)
                             top_negative = loadings.tail(num_top_vars).sort_values() # 确保负值最低的在前
-                            
+
+                            # <-- 修改: 使用 \n 替换 \\n -->
                             interpretation = f"因子 {factor_col}:\n"
                             interpretation += f"  强正载荷变量 (Top {num_top_vars}):\n"
                             pos_types = []
@@ -675,7 +797,7 @@ def analyze_and_save_final_results(
                                 var_type = var_type_map.get(lookup_key, "未知")
                                 interpretation += f"    - {var} ({var_type}): {loading:.3f}\n"
                                 pos_types.append(var_type)
-                                
+
                             interpretation += f"  强负载荷变量 (Top {num_top_vars}):\n"
                             neg_types = []
                             for var, loading in top_negative.items():
@@ -683,63 +805,89 @@ def analyze_and_save_final_results(
                                 var_type = var_type_map.get(lookup_key, "未知")
                                 interpretation += f"    - {var} ({var_type}): {loading:.3f}\n"
                                 neg_types.append(var_type)
-                                
-                            # --- 尝试生成经济解释 --- 
-                            all_types = pos_types + neg_types
-                            from collections import Counter
-                            type_counts = Counter(t for t in all_types if t != "未知")
-                            most_common_type, common_count = type_counts.most_common(1)[0] if type_counts else ("未知", 0)
-                            
-                            economic_meaning = ""
-                            if common_count >= num_top_vars * 0.6: # 如果某一类型占比超过 60%
-                                if most_common_type == '价格':
-                                    economic_meaning = "可能主要反映了相关领域的价格水平或通胀压力。"
-                                elif most_common_type in ['工业', '生产', '能源']:
-                                    economic_meaning = "可能主要代表了工业生产活动或能源消耗的强度。"
-                                elif most_common_type in ['景气度', '预期', '情绪']:
-                                    economic_meaning = "可能主要捕捉了市场情绪、信心或经济景气预期。"
-                                elif most_common_type == '金融':
-                                    economic_meaning = "可能主要反映了金融市场状况、利率或流动性。"
-                                elif most_common_type == '外贸':
-                                    economic_meaning = "可能与进出口活动或外部需求相关。"
-                                else:
-                                    economic_meaning = f"可能主要与 '{most_common_type}' 类型的指标相关。"
+                            # <-- 结束修改 -->
+
+                            # --- 修改: 增强经济解释生成 ---
+                            pos_type_counts = Counter(t for t in pos_types if t != "未知")
+                            neg_type_counts = Counter(t for t in neg_types if t != "未知")
+
+                            economic_meaning = "可能的解释: "
+                            dominant_pos_types = [f"{t} ({c})" for t, c in pos_type_counts.most_common(2)]
+                            dominant_neg_types = [f"{t} ({c})" for t, c in neg_type_counts.most_common(2)]
+
+                            if dominant_pos_types:
+                                economic_meaning += f"正向主要由 [{', '.join(dominant_pos_types)}] 类型变量驱动。"
                             else:
-                                 economic_meaning = "可能代表了多种经济活动或因素的综合影响。"
-                            # --- 结束经济解释生成 ---
-                            
-                            interpretation += f"  可能的经济含义: {economic_meaning}\n"
+                                economic_meaning += "正向无明显主导变量类型。"
+
+                            if dominant_neg_types:
+                                economic_meaning += f" 负向主要由 [{', '.join(dominant_neg_types)}] 类型变量驱动。"
+                            else:
+                                economic_meaning += " 负向无明显主导变量类型。"
+
+                            # 尝试提供宏观/行业角度的总结 (可以根据具体类型进一步细化)
+                            all_top_types = pos_types + neg_types
+                            all_type_counts = Counter(t for t in all_top_types if t != "未知")
+                            most_common_overall, common_overall_count = all_type_counts.most_common(1)[0] if all_type_counts else ("未知", 0)
+
+                            if common_overall_count >= num_top_vars * 0.8: # 如果整体类型非常集中
+                                if most_common_overall == '价格': economic_meaning += " 整体可能反映价格/通胀因素。"
+                                elif most_common_overall in ['工业', '生产', '能源']: economic_meaning += " 整体可能反映工业生产活动强度。"
+                                elif most_common_overall in ['景气度', '预期', '情绪']: economic_meaning += " 整体可能反映市场信心/预期。"
+                                elif most_common_overall == '金融': economic_meaning += " 整体可能反映金融市场状况。"
+                                elif most_common_overall == '外贸': economic_meaning += " 整体可能反映外贸活动。"
+                                else: economic_meaning += f" 整体高度关联 '{most_common_overall}' 类型指标。"
+                            else:
+                                economic_meaning += " 该因子综合反映多种经济活动。"
+                            # --- 结束修改 ---
+
+                            # <-- 修改: 使用 \n 替换 \\n -->
+                            interpretation += f"  {economic_meaning}\n" # 使用修改后的解释
+                            # <-- 结束修改 -->
                             factor_interpretations.append(interpretation)
-                            
+
                         interpret_df = pd.DataFrame({'Factor Interpretation': factor_interpretations})
                         interpret_df.to_excel(writer, sheet_name='Factor_Interpretation', index=False)
                         print(f"  因子解释已写入 Sheet: 'Factor_Interpretation'")
                     else: print(f"  警告: 无法生成因子解释，因为最终载荷矩阵 ('lambda_df_final') 不可用或为空。")
                 except Exception as e_interpret: print(f"写入 Factor_Interpretation 时出错: {e_interpret}")
 
-                # Sheet: Aligned_Original_Data
-                try:
-                    data_to_save_aligned_orig = all_data_full.copy()
-                    # ... (Formatting as before) ...
-                    data_to_save_aligned_orig = data_to_save_aligned_orig.reset_index()
-                    data_to_save_aligned_orig.to_excel(writer, sheet_name='Aligned_Original_Data', index=False)
-                    print(f"  对齐的原始数据已写入 Sheet: 'Aligned_Original_Data'")
-                except Exception as e_aligned_orig: print(f"写入 Aligned_Original_Data 时出错: {e_aligned_orig}")
-
                 # Sheet: Data_Input_to_DFM
                 try:
                     data_to_save_dfm_input = final_data_processed.copy()
-                    # ... (Formatting as before) ...
+                    # --- 修改: 保存前四舍五入到6位小数 --- 
+                    data_to_save_dfm_input = data_to_save_dfm_input.round(6)
+                    # --- 结束修改 ---
+                    # --- 格式化索引和列名 (保持不变) ---
+                    if isinstance(data_to_save_dfm_input.index, pd.DatetimeIndex):
+                        data_to_save_dfm_input.index = data_to_save_dfm_input.index.strftime('%Y-%m-%d')
+                    else: 
+                        data_to_save_dfm_input.index = data_to_save_dfm_input.index.astype(str)
+                    data_to_save_dfm_input.columns = data_to_save_dfm_input.columns.astype(str)
+                    # --- 结束格式化 ---
                     data_to_save_dfm_input = data_to_save_dfm_input.reset_index()
                     data_to_save_dfm_input.to_excel(writer, sheet_name='Data_Input_to_DFM', index=False)
-                    print(f"  进入DFM模型的数据已写入 Sheet: 'Data_Input_to_DFM'")
+                    print(f"  进入DFM模型的数据已写入 Sheet: 'Data_Input_to_DFM' (格式化为6位小数)")
                 except Exception as e_dfm_input: print(f"写入 Data_Input_to_DFM 时出错: {e_dfm_input}")
 
-            print("Excel 文件写入尝试完成。")
-        except Exception as e_writer: 
-            print(f"创建或写入 Excel 文件 '{excel_output_file}' 时发生严重错误: {e_writer}")
-        # --- 结束写入 Excel --- 
-        
+                # Sheet: Full_Aligned_Data_Orig
+                try:
+                    # 保存原始对齐数据 (保存前转换为字符串避免Excel自动格式化问题)
+                    # <-- 修改: fillna('') -->
+                    data_to_save_orig = all_data_full.copy().fillna('') 
+                    if isinstance(data_to_save_orig.index, pd.DatetimeIndex):
+                        data_to_save_orig.index = data_to_save_orig.index.strftime('%Y-%m-%d')
+                    else: data_to_save_orig.index = data_to_save_orig.index.astype(str)
+                    data_to_save_orig.columns = data_to_save_orig.columns.astype(str)
+                    data_to_save_orig = data_to_save_orig.astype(str).reset_index()
+                    data_to_save_orig.to_excel(writer, sheet_name='Full_Aligned_Data_Orig', index=False)
+                except Exception as e: print(f"写入 Full_Aligned_Data_Orig 时出错: {e}")
+
+            print(f"Excel 文件基础部分写入完成。") # 增加日志
+        except Exception as e_writer:
+            print(f"创建或写入 Excel 文件 '{excel_output_path}' 时发生严重错误: {e_writer}")
+        # --- 结束写入 Excel 文件 --- 
+
         # --- 生成 Nowcast 对比图 --- 
         if 'target_for_comparison' in locals() and not target_for_comparison.empty:
             print(f"调用 plot_final_nowcast, 保存到: {final_plot_file}") # 确认传入 plot_final_nowcast 的路径正确
@@ -760,29 +908,43 @@ def analyze_and_save_final_results(
         print("\n生成因子载荷热力图...")
         if lambda_df_final is not None and not lambda_df_final.empty:
             try:
-                plt.figure(figsize=(max(10, lambda_df_final.shape[1] * 1.2), # 宽度适应因子数量
-                                   max(12, lambda_df_final.shape[0] * 0.3))) # 高度适应变量数量
+                # <-- 新增：准备带有贡献度的因子标签 -->
+                factor_labels_with_contrib = []
+                if factor_contributions:
+                    for factor_name in lambda_df_final.columns:
+                        contrib = factor_contributions.get(factor_name, None)
+                        if contrib is not None:
+                            factor_labels_with_contrib.append(f"{factor_name}\n({contrib:.1f}%)") # 格式化标签
+                        else:
+                            factor_labels_with_contrib.append(factor_name) # 如果没有贡献度信息，只用名字
+                else:
+                    factor_labels_with_contrib = lambda_df_final.columns.tolist()
+                # <-- 结束新增 -->
+
+                plt.figure(figsize=(max(10, lambda_df_final.shape[1] * 1.5), # 调整宽度以适应更长的标签
+                                   max(12, lambda_df_final.shape[0] * 0.3)))
                 sns.heatmap(lambda_df_final, 
-                            annot=True,       # 显示数值
-                            fmt=".2f",        # 格式化数值为两位小数
-                            cmap='RdBu_r',    # 使用红-白-蓝颜色映射 (反转使正红负蓝)
-                            center=0,         # 将颜色中心设为 0
-                            linewidths=.5,    # 添加单元格间线条
-                            linecolor='lightgray', # 线条颜色
-                            cbar_kws={'shrink': .5}) # 调整颜色条大小
-                plt.title(f'因子载荷热力图 (Factor Loadings) [Run: {timestamp_str}]', fontsize=14)
-                plt.xlabel('因子 (Factors)', fontsize=12)
+                            annot=True,
+                            fmt=".2f",
+                            cmap='RdBu_r',
+                            center=0,
+                            linewidths=.5,
+                            linecolor='lightgray',
+                            xticklabels=factor_labels_with_contrib, # <-- 修改：使用带贡献度的标签
+                            cbar_kws={'shrink': .5})
+                plt.title(f'因子载荷热力图 (Factor Loadings) [Run: {timestamp_str}]\n(X轴标签显示因子对目标变量总方差贡献率近似值)', fontsize=14) # 修改标题解释
+                plt.xlabel('因子及其贡献度 (%)', fontsize=12) # 修改X轴标签
                 plt.ylabel('变量 (Variables)', fontsize=12)
-                plt.xticks(rotation=45, ha='right')
+                plt.xticks(rotation=0, ha='center') # 修改旋转角度为0，居中对齐
                 plt.yticks(rotation=0)
-                plt.tight_layout(rect=[0, 0, 1, 0.97]) # 调整布局以防标题重叠
-                print(f"保存因子载荷热力图到: {heatmap_file}") # 确认保存路径正确
+                plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # 调整布局以防标签重叠
+                print(f"保存因子载荷热力图到: {heatmap_file}")
                 plt.savefig(heatmap_file)
                 plt.close()
                 print(f"  因子载荷热力图已保存到: {heatmap_file}")
             except Exception as e_heatmap:
                 print(f"  生成或保存因子载荷热力图时出错: {e_heatmap}")
-                plt.close() # 确保关闭图形
+                plt.close()
         else:
             print("警告: 无法生成因子载荷热力图，因为最终载荷矩阵 (lambda_df_final) 不可用或为空。")
         # --- 结束生成热力图 ---
@@ -820,44 +982,59 @@ def analyze_and_save_final_results(
         import traceback
         traceback.print_exc()
 
-# --- 修改绘图函数以移除 use_differencing --- 
+# --- 修改绘图函数以绘制完整 Nowcast --- 
 def plot_final_nowcast(final_nowcast_series, target_for_plot, validation_start, validation_end, title, filename, use_log_yoy):
-    print("\n生成最终 Nowcasting 图 (原始水平)...")
+    print("\n生成最终 Nowcasting 图 (原始水平 - 绘制完整预测)...") # 更新日志
     try:
-        common_index_plot = final_nowcast_series.index.intersection(target_for_plot.index)
-        if common_index_plot.empty:
-            print("错误：无法对齐最终 Nowcast 和目标序列进行绘图。")
-            return
+        # 不再基于 common_index_plot 过滤，但需要目标序列的索引用于屏蔽
+        target_index = target_for_plot.index
 
         nowcast_col_name = 'Nowcast_Orig'
         target_col_name = target_for_plot.name if target_for_plot.name is not None else 'Actual'
         if target_col_name == nowcast_col_name:
             target_col_name = 'Observed_Value'
 
-        plot_df = pd.concat([
-            final_nowcast_series.loc[common_index_plot].rename(nowcast_col_name),
-            target_for_plot.loc[common_index_plot].rename(target_col_name)
-        ], axis=1)
-        plot_df = plot_df.dropna(subset=[target_col_name])
+        # --- 修改: 直接使用完整的 final_nowcast_series ---
+        plot_df = final_nowcast_series.to_frame(name=nowcast_col_name)
+        # 合并目标变量，只为了屏蔽和绘制，允许 NaN
+        plot_df = plot_df.join(target_for_plot.rename(target_col_name), how='left') 
 
-        # --- 新增: 绘图时移除1月/2月实际值 ---
-        plot_df_masked = plot_df.copy()
-        month_indices_plot = plot_df_masked.index.month
-        plot_df_masked.loc[(month_indices_plot == 1) | (month_indices_plot == 2), target_col_name] = np.nan 
+        # --- 新增: 绘图时移除1月/2月实际值 (如果目标值存在) ---
+        if target_col_name in plot_df.columns:
+            month_indices_plot = plot_df.index.month
+            plot_df.loc[(month_indices_plot == 1) | (month_indices_plot == 2), target_col_name] = np.nan 
         # --- 结束新增 ---
 
         if not plot_df.empty:
             plt.figure(figsize=(14, 7))
             
             nowcast_label = '周度 Nowcast (原始水平)'
-            actual_label = '观测值 (原始水平)'
+            actual_label = '观测值 (原始水平, 屏蔽1/2月)'
             ylabel = '值 (原始水平)'
 
-            plt.plot(plot_df_masked.index, plot_df_masked[nowcast_col_name], label=nowcast_label, linestyle='-', alpha=0.8, color='blue')
-            plt.plot(plot_df_masked.index, plot_df_masked[target_col_name], label=actual_label, marker='o', linestyle='None', markersize=4, color='red')
+            # --- 修改: 绘制完整的 Nowcast --- 
+            plt.plot(plot_df.index, plot_df[nowcast_col_name], label=nowcast_label, linestyle='-', alpha=0.8, color='blue')
+            # --- 结束修改 ---
+            
+            # 绘制实际观测点 (只绘制非 NaN 的点)
+            if target_col_name in plot_df.columns:
+                plt.plot(plot_df.index, plot_df[target_col_name], label=actual_label, marker='o', linestyle='None', markersize=4, color='red')
             
             try:
-                plt.axvspan(pd.to_datetime(validation_start), pd.to_datetime(validation_end), color='yellow', alpha=0.2, label='验证期')
+                # --- 修改: 确保验证期标记在图表范围内 --- 
+                plot_start_date = plot_df.index.min()
+                plot_end_date = plot_df.index.max()
+                val_start = pd.to_datetime(validation_start)
+                val_end = pd.to_datetime(validation_end)
+                # 只在验证期与绘图范围有重叠时标记
+                span_start = max(plot_start_date, val_start)
+                span_end = min(plot_end_date, val_end)
+                if span_start < span_end:
+                    plt.axvspan(span_start, span_end, color='yellow', alpha=0.2, label='验证期')
+                else:
+                     plt.axvspan(val_start, val_end, color='yellow', alpha=0.2, label='验证期 (超出部分范围)') # 仍然添加图例标签
+                     print("警告: 验证期与绘图范围无重叠或重叠无效，标记可能不完整。")
+                # --- 结束修改 ---
             except Exception as date_err:
                 print(f"警告：标记验证期时出错 - {date_err}")
 
@@ -872,12 +1049,18 @@ def plot_final_nowcast(final_nowcast_series, target_for_plot, validation_start, 
             plt.close()
             print(f"最终 Nowcasting 图已保存到: {filename}")
         else:
-                print("错误：对齐后用于绘图的数据为空。") 
+                print("错误：无法准备用于绘图的数据。") 
     except Exception as e:
         print(f"生成或保存最终 Nowcasting 图时出错: {e}")
 
 # --- 主逻辑 --- 
 def run_tuning():
+    global _run_tuning_executed # 引用全局标志
+    if _run_tuning_executed:
+        print("警告: run_tuning() 已被调用，跳过重复执行。")
+        return # 如果已执行，则直接返回
+    _run_tuning_executed = True # 标记为已执行
+
     script_start_time = time.time()
     total_evaluations = 0
     svd_error_count = 0
@@ -891,6 +1074,10 @@ def run_tuning():
     log_file_path = os.path.join(run_output_dir, log_filename) # 日志文件的完整路径
     # --- 结束新增 ---
     
+    # --- 新增: 定义 Excel 输出文件路径 ---
+    excel_output_file = os.path.join(run_output_dir, f"result_{timestamp_str}.xlsx")
+    # --- 结束新增 ---
+
     print(f"--- 开始变量后向剔除与超参数调优 (优化目标: 平均胜率优先, RMSE其次; k_factors 动态范围, 对数同比转换: {transform_info}) ---")
     print(f"本次运行结果将保存在: {run_output_dir}") # 打印本次运行目录
     
@@ -986,11 +1173,86 @@ def run_tuning():
 
     print(f"成功创建 {len(var_type_map)} 个指标的类型映射。")
 
-    # --- 原有代码被跳过 --- 
-    print("\n--- 确定初始变量块和动态因子数范围 ---")
+    # --- 新增: 计算原始目标变量的稳定均值和标准差 ---
+    original_target_series_for_stats = all_data_aligned_weekly[TARGET_VARIABLE].copy().dropna()
+    if original_target_series_for_stats.empty:
+        print(f"错误: 原始目标变量 '{TARGET_VARIABLE}' 在移除 NaN 后为空，无法计算统计量。")
+        sys.exit(1)
+    target_mean_original = original_target_series_for_stats.mean()
+    target_std_original = original_target_series_for_stats.std()
+    if pd.isna(target_mean_original) or pd.isna(target_std_original) or target_std_original == 0:
+        print(f"错误: 计算得到的原始目标变量统计量无效 (Mean: {target_mean_original}, Std: {target_std_original})。")
+        sys.exit(1)
+    print(f"已计算原始目标变量的稳定统计量 (用于反标准化): Mean={target_mean_original:.4f}, Std={target_std_original:.4f}")
+    print("-"*30)
+    # --- 结束新增 ---
+
+    # --- 新增: 在变量筛选前检查初始预测变量的连续缺失值 (>=10期) ---
+    print(f"\n--- 检查初始预测变量 ({len(initial_variables)}) 的连续缺失值 (>=10期)... ---")
+    consecutive_nan_threshold_init = 10
+    vars_to_remove_consecutive_init = []
+
+    # 检查的对象是 all_data_aligned_weekly 中对应的初始预测变量列
+    for col in initial_variables:
+        # --- 新增: 跳过目标变量的检查 ---
+        if col == TARGET_VARIABLE:
+            print(f"    跳过对目标变量 '{col}' 的连续缺失值检查。")
+            continue
+        # --- 结束新增 ---
+
+        # 计算连续 NaN
+        is_na = all_data_aligned_weekly[col].isna()
+        na_blocks = is_na.ne(is_na.shift()).cumsum()[is_na]
+        if not na_blocks.empty:
+            max_consecutive_nan = na_blocks.value_counts().max()
+            if max_consecutive_nan >= consecutive_nan_threshold_init:
+                vars_to_remove_consecutive_init.append((col, max_consecutive_nan))
+
+    if vars_to_remove_consecutive_init:
+        print(f"  警告: 以下初始预测变量因存在 {consecutive_nan_threshold_init} 期或更长的连续缺失值，将被移除，不参与后续筛选:")
+        removed_vars_log_init = []
+        for var_rm, max_nan in vars_to_remove_consecutive_init:
+            print(f"    - {var_rm} (最大连续缺失: {max_nan} 期)")
+            removed_vars_log_init.append(var_rm)
+
+        # 从 initial_predictors 和 initial_variables 中移除这些变量
+        initial_predictors = [v for v in initial_variables if v != TARGET_VARIABLE and v not in removed_vars_log_init] # 确保目标变量始终在 initial_predictors 之外
+        initial_variables = [v for v in initial_variables if v not in removed_vars_log_init] # 移除非目标变量
+
+        print(f"  移除长连续缺失变量后，剩余初始预测变量数: {len(initial_predictors)}")
+        # --- 新增: 确保目标变量仍在 initial_variables 中 ---
+        if TARGET_VARIABLE not in initial_variables:
+             print(f"  警告: 目标变量 '{TARGET_VARIABLE}' 在移除其他变量后丢失，正在重新添加...")
+             initial_variables.append(TARGET_VARIABLE)
+             initial_variables.sort() # 可选：保持排序
+        # --- 结束新增 ---
+        if log_file:
+             try:
+                 log_file.write("\n" + "-"*35 + "\n")
+                 log_file.write(f"--- 变量筛选前连续缺失值检查 ({consecutive_nan_threshold_init}期) ---\n")
+                 log_file.write(f"移除变量: {removed_vars_log_init}\n")
+                 log_file.write(f"剩余预测变量数: {len(initial_predictors)}\n")
+                 log_file.write("-"*35 + "\n")
+             except Exception as log_e:
+                 print(f"写入初始连续缺失检查日志时出错: {log_e}")
+    else:
+        print(f"  所有初始预测变量的最大连续缺失值均低于 {consecutive_nan_threshold_init} 期。所有变量均通过此检查！")
+        if log_file:
+            try:
+                log_file.write("\n" + "-"*35 + "\n")
+                log_file.write(f"--- 变量筛选前连续缺失值检查 ({consecutive_nan_threshold_init}期) ---\n")
+                log_file.write(f"所有初始预测变量均通过检查。\n")
+                log_file.write("-"*35 + "\n")
+            except Exception as log_e:
+                print(f"写入初始连续缺失检查日志时出错: {log_e}")
+    print("-"*30) # 添加分隔符
+    # --- 结束新增检查 ---
+
+    # --- 原有代码被跳过 ---
+    # print("\n--- 确定初始变量块和动态因子数范围 ---")
     # ... [后续所有 DFM 调优和分析代码将不会执行] ...
 
-    print("\n--- 确定初始变量块和动态因子数范围 ---")
+    print("\n--- 确定初始变量块和动态因子数范围 (基于筛选后的变量) ---") # 修改描述
     initial_predictors = [v for v in initial_variables if v != TARGET_VARIABLE]
     temp_blocks_init = {}
     for var in initial_predictors:
@@ -1027,8 +1289,16 @@ def run_tuning():
     K_FACTORS_RANGE = list(range(1, max_k_factors + 1))
     print(f"动态确定的因子数范围 (基于初始块数 {max_k_factors}): {K_FACTORS_RANGE}")
 
+    # --- 临时修改：仅测试第一个因子数以加速 --- 
+    K_FACTORS_RANGE_TEST = K_FACTORS_RANGE[:1] # 只取第一个因子数
+    print(f"*** 快速测试：临时限制因子数范围为: {K_FACTORS_RANGE_TEST} ***")
+    # --- 结束临时修改 ---
+
     HYPERPARAMS_TO_TUNE = [] 
-    for k in K_FACTORS_RANGE:
+    # --- 临时修改：使用 K_FACTORS_RANGE_TEST ---
+    # for k in K_FACTORS_RANGE: # 原代码
+    for k in K_FACTORS_RANGE_TEST: # 修改后：使用限制后的范围
+    # --- 结束临时修改 ---
         HYPERPARAMS_TO_TUNE.append({'k_factors': k})
     print(f"构建了 {len(HYPERPARAMS_TO_TUNE)} 个超参数组合进行测试 (仅调整 k_factors)。")
 
@@ -1043,15 +1313,15 @@ def run_tuning():
     print("-" * 30)
 
     print("\n--- 初始化: 评估所有预测变量 ---")
-    initial_predictors = [v for v in all_data_aligned_weekly.columns if v != TARGET_VARIABLE]
-    initial_variables = initial_predictors + [TARGET_VARIABLE]
+    # initial_predictors = [v for v in all_data_aligned_weekly.columns if v != TARGET_VARIABLE]
+    # initial_variables = initial_predictors + [TARGET_VARIABLE]
     # --- 恢复: 初始化跟踪变量为胜率优先 ---
     best_overall_hit_rate = -np.inf
     best_overall_mae = np.inf 
     # best_overall_oos_hit_rate = -np.inf # 不再单独跟踪 OOS HR
     # --- 结束恢复 ---
     best_overall_params = None
-    # best_overall_variables = initial_variables.copy() # 变量在找到第一个最佳后更新
+    best_overall_variables = initial_variables.copy() # <-- 修改：初始化最佳变量为筛选后的 initial_variables
     initial_best_found = False
 
     futures_initial_map = {}
@@ -1066,10 +1336,12 @@ def run_tuning():
                                      VALIDATION_START_DATE,
                                      VALIDATION_END_DATE,
                                      TARGET_FREQ,
-                                     TRAIN_END_DATE, 
+                                     TRAIN_END_DATE,
+                                     target_mean_original=target_mean_original, # 确保此行存在且正确
+                                     target_std_original=target_std_original,  # 确保此行存在且正确
                                      max_iter=N_ITER_FIXED
                                  )
-            futures_initial_map[future] = params 
+            futures_initial_map[future] = params
 
     print(f"提交 {len(futures_initial_map)} 个初始评估任务 (使用最多 {MAX_WORKERS} 进程)...")
     results = []
@@ -1106,7 +1378,7 @@ def run_tuning():
                     best_overall_hit_rate = combined_hit_rate
                     best_overall_mae = combined_rmse
                     best_overall_params = params
-                    best_overall_variables = initial_variables # 初始评估时变量不变
+                    best_overall_variables = initial_variables.copy() # <-- 修改: 确保使用当前的 initial_variables
                     initial_best_found = True 
             # --- 结束修改 ---
 
@@ -1189,7 +1461,9 @@ def run_tuning():
                             validation_end=VALIDATION_END_DATE,
                             target_freq=TARGET_FREQ,
                             train_end_date=TRAIN_END_DATE, 
-                            max_iter=N_ITER_FIXED
+                            max_iter=N_ITER_FIXED,
+                            target_mean_original=target_mean_original, # <-- 传递稳定值
+                            target_std_original=target_std_original,  # <-- 传递稳定值
                         )
                         futures_removal.append({
                             'future': future,
@@ -1311,16 +1585,84 @@ def run_tuning():
             final_k_factors = final_params['k_factors']
             final_p_shocks = final_k_factors
             
-            print(f"最终运行参数(来自调优): 因子数={final_k_factors}, 冲击数={final_p_shocks}, 对数同比(预测变量)={USE_LOG_YOY_TRANSFORM}")
+            print(f"最终运行参数: 因子数={final_k_factors}, 冲击数={final_p_shocks}, 对数同比(预测变量)={USE_LOG_YOY_TRANSFORM}") # 使用更简洁的打印
 
             print("准备最终运行的数据...")
-            final_predictors = [v for v in final_variables if v != TARGET_VARIABLE]
-            final_target = TARGET_VARIABLE
+            # --- 删除: 移动到变量筛选前的连续缺失值检查 ---
+            # print(f"  检查最终变量列表 ({len(final_variables)}) 的连续缺失值 (>=10期)...")
+            # # 使用已对齐到周度的完整数据进行检查
+            # final_data_for_check = all_data_aligned_weekly[final_variables].copy()
+            # consecutive_nan_threshold = 10
+            # vars_to_remove_consecutive = []
 
-            final_data_numeric = all_data_aligned_weekly[final_variables].copy()
+            # for col in final_variables:
+            #     if col == TARGET_VARIABLE: # 跳过目标变量
+            #         continue
+
+            #     # 计算连续 NaN
+            #     is_na = final_data_for_check[col].isna()
+            #     # 使用 groupby 和 cumsum 来识别连续块
+            #     na_blocks = is_na.ne(is_na.shift()).cumsum()[is_na]
+            #     if not na_blocks.empty:
+            #          # 计算每个连续 NaN 块的长度
+            #         max_consecutive_nan = na_blocks.value_counts().max()
+            #         if max_consecutive_nan >= consecutive_nan_threshold:
+            #             vars_to_remove_consecutive.append((col, max_consecutive_nan))
+
+            # if vars_to_remove_consecutive:
+            #     print(f"  警告: 以下预测变量因存在 {consecutive_nan_threshold} 期或更长的连续缺失值，将从最终模型中移除:")
+            #     removed_vars_log = []
+            #     for var_rm, max_nan in vars_to_remove_consecutive:
+            #         print(f"    - {var_rm} (最大连续缺失: {max_nan} 期)")
+            #         removed_vars_log.append(var_rm)
+
+            #     # 从 final_variables 中移除这些变量 (不包括目标变量)
+            #     final_variables = [v for v in final_variables if v not in removed_vars_log]
+
+            #     print(f"  移除长连续缺失变量后，剩余变量数: {len(final_variables)}")
+            #     if TARGET_VARIABLE not in final_variables:
+            #          # 理论上不会发生
+            #          print(f"  严重错误: 目标变量 {TARGET_VARIABLE} 在连续缺失值检查后被移除! 无法继续。")
+            #          if log_file: log_file.write(f"错误：目标变量 {TARGET_VARIABLE} 在连续缺失值检查后被移除。\n")
+            #          sys.exit(1)
+            #     # 检查剩余变量数是否足够
+            #     if len(final_variables) -1 < final_k_factors: # -1 是因为要排除目标变量
+            #         print(f"  警告: 移除长连续缺失变量后，剩余预测变量数 ({len(final_variables)-1}) 少于因子数 ({final_k_factors})。模型可能不稳定或失败。")
+            #         if log_file: log_file.write(f"警告: 移除长连续缺失变量后，预测变量数 ({len(final_variables)-1}) 少于因子数 ({final_k_factors})。\n")
+            # else:
+            #     # 修改打印信息，使其更明确
+            #     print(f"  所有最终预测变量的最大连续缺失值均低于 {consecutive_nan_threshold} 期。所有变量均通过此检查并进入最终模型！")
+            #     if log_file: log_file.write(f"最终预测变量连续缺失值检查通过 (阈值 {consecutive_nan_threshold} 期)。\n")
+            # --- 结束连续缺失值检查 ---
+
+            # --- 修改: 确保 final_variables 包含 TARGET_VARIABLE 且预测变量列表正确 ---
+            if TARGET_VARIABLE not in final_variables:
+                 print(f"错误: 最终变量列表 '{final_variables}' 中不包含目标变量 '{TARGET_VARIABLE}'。正在尝试添加...")
+                 final_variables.append(TARGET_VARIABLE)
+                 final_variables = sorted(list(set(final_variables))) # 去重并排序
+
+            final_predictors = [v for v in final_variables if v != TARGET_VARIABLE]
+            final_target = TARGET_VARIABLE # 目标变量名称不变
+            print(f"  最终确认变量数: {len(final_variables)} (其中预测变量 {len(final_predictors)})")
+            # --- 结束修改 ---
+
+            # 使用更新后的 final_variables 继续后续步骤
+            if not final_variables or len(final_predictors) == 0:
+                 print("错误: 经过连续缺失值检查后，没有剩余变量或预测变量可用于最终模型。")
+                 if log_file: log_file.write("错误: 连续缺失值检查后无剩余变量或预测变量。\n")
+                 sys.exit(1)
+            
+            # --- 修改: 最终运行时使用全时间范围数据 --- 
+            # final_data_numeric = all_data_aligned_weekly[final_variables].copy() # 旧: 可能只包含到验证期结束
+            # 直接使用 all_data_aligned_weekly 已经包含了所有时间
+            final_data_numeric_full_range = all_data_aligned_weekly[final_variables].copy()
+            print(f"  使用完整时间范围数据进行最终模型拟合 (原始数据 Shape: {final_data_numeric_full_range.shape})")
+            final_data_numeric = final_data_numeric_full_range # 使用新变量名以清晰
+            # --- 结束修改 ---
+            
             final_data_numeric = final_data_numeric.apply(pd.to_numeric, errors='coerce')
 
-            # --- 修改: 使用变量级转换代替全局 LogYoY ---
+            # --- 修改: 使用变量级转换代替全局 LogYoY --- 
             final_data_processed_transformed, final_transform_details = apply_stationarity_transforms(
                 final_data_numeric, final_target
             )
@@ -1382,7 +1724,22 @@ def run_tuning():
             )
             print("最终 DFM 模型运行成功。")
 
-            print("\n[DEBUG POST-FINAL DFM CALL]")
+            # <-- 新增: 检查最终模型输入和输出时间范围 -->
+            try:
+                if not final_data_std_masked_for_fit.empty:
+                    print(f"  [DEBUG TIME CHECK] Input data (final_data_std_masked_for_fit) end date: {final_data_std_masked_for_fit.index.max()}")
+                else:
+                    print("  [DEBUG TIME CHECK] Input data (final_data_std_masked_for_fit) is empty!")
+                
+                if hasattr(final_dfm_results_obj, 'x_sm') and final_dfm_results_obj.x_sm is not None and not final_dfm_results_obj.x_sm.empty:
+                    print(f"  [DEBUG TIME CHECK] Smoothed factors (x_sm) end date: {final_dfm_results_obj.x_sm.index.max()}")
+                else:
+                    print("  [DEBUG TIME CHECK] Smoothed factors (x_sm) are missing or empty!")
+            except Exception as e_debug_print:
+                print(f"  [DEBUG TIME CHECK] Error printing time range info: {e_debug_print}")
+            # <-- 结束新增 -->
+
+            print("\\n[DEBUG POST-FINAL DFM CALL]")
             if hasattr(final_dfm_results_obj, 'x_sm'):
                 final_x_sm_check = final_dfm_results_obj.x_sm
                 if final_x_sm_check is None:
@@ -1408,6 +1765,132 @@ def run_tuning():
             
     script_end_time = time.time() # 移到这里，确保即使 DFM 运行失败也能计算时间
     total_runtime_seconds = script_end_time - script_start_time
+
+    # <-- 移动 PCA 计算块到这里 -->
+    # --- 计算 PCA 解释方差 (修改: 不写入，仅计算) ---
+    print("\n计算基于最终输入数据的 PCA 解释方差...")
+    pca_results_df = None # 保证变量存在
+    try:
+        # 获取最终用于 DFM 拟合的标准化数据
+        if 'final_data_std_for_dfm' in locals() and isinstance(final_data_std_for_dfm, pd.DataFrame) and not final_data_std_for_dfm.empty:
+             data_for_pca = final_data_std_for_dfm.copy()
+             print(f"  使用 final_data_std_for_dfm (Shape: {data_for_pca.shape}) 进行 PCA 分析。")
+        elif 'final_data_std_masked_for_fit' in locals() and isinstance(final_data_std_masked_for_fit, pd.DataFrame) and not final_data_std_masked_for_fit.empty:
+             data_for_pca = final_data_std_masked_for_fit.copy()
+             print(f"  警告: final_data_std_for_dfm 不可用，回退使用 final_data_std_masked_for_fit (Shape: {data_for_pca.shape}) 进行 PCA 分析。")
+        elif 'final_data_processed' in locals() and isinstance(final_data_processed, pd.DataFrame) and not final_data_processed.empty:
+             print(f"  警告: 标准化数据不可用，尝试使用处理后的非标准化数据进行 PCA 分析 (Shape: {final_data_processed.shape}).")
+             # 需要先标准化
+             pca_mean = final_data_processed.mean(skipna=True)
+             pca_std = final_data_processed.std(skipna=True)
+             pca_std[pca_std == 0] = 1.0
+             data_for_pca = (final_data_processed - pca_mean) / pca_std
+             print(f"  临时标准化完成。")
+        else:
+             print("  错误: 找不到合适的标准化或处理后数据进行 PCA 分析。")
+             raise ValueError("无法进行 PCA 分析，缺少数据。")
+
+        # 处理缺失值 (使用均值填充)
+        print(f"  处理 PCA 输入数据的缺失值 (使用均值填充)... 原始 NaN 数量: {data_for_pca.isna().sum().sum()}")
+        if data_for_pca.isna().any().any():
+            data_pca_imputed = data_for_pca.fillna(data_for_pca.mean())
+            print(f"  填充后 NaN 数量: {data_pca_imputed.isna().sum().sum()}")
+        else:
+            data_pca_imputed = data_for_pca
+            print("  数据无缺失值，无需填充。")
+
+        # 执行 PCA (确保 final_k_factors 已定义)
+        if 'final_k_factors' not in locals() or not isinstance(final_k_factors, int) or final_k_factors <= 0:
+             print("  错误: 无法执行 PCA，因为最终因子数 (final_k_factors) 无效或未定义。")
+             raise ValueError("PCA 需要有效的 final_k_factors。")
+        num_components = final_k_factors
+        pca = PCA(n_components=num_components)
+        print(f"  对填充后的数据执行 PCA (n_components={num_components})...")
+        pca.fit(data_pca_imputed)
+
+        explained_variance_ratio_pct = pca.explained_variance_ratio_ * 100
+        cumulative_explained_variance_pct = np.cumsum(explained_variance_ratio_pct)
+
+        pca_results_df = pd.DataFrame({
+            '主成分 (Principal Component)': [f'PC{i+1}' for i in range(num_components)],
+            '解释方差 (%)': explained_variance_ratio_pct,
+            '累计解释方差 (%)': cumulative_explained_variance_pct
+        })
+
+        print("  PCA 解释方差计算完成:")
+        print(pca_results_df.to_string(index=False))
+
+    except Exception as e_pca_main:
+        print(f"  计算 PCA 解释方差时发生错误: {e_pca_main}")
+        import traceback
+        traceback.print_exc()
+    # --- 结束 PCA 计算 ---
+    # <-- 移动 PCA 计算块结束 -->
+
+    # <-- 移动因子贡献度计算块到这里 -->
+    # --- 计算因子对目标变量贡献度 (修改: 不写入，仅计算) ---
+    print("\n计算各因子对目标变量的贡献度...")
+    contribution_results_df = None # 保证变量存在
+    factor_contributions = None # 保证变量存在
+    try:
+        lambda_target = None
+        # 尝试从 final_dfm_results_obj 获取载荷
+        if final_dfm_results_obj and hasattr(final_dfm_results_obj, 'Lambda'):
+            final_loadings = final_dfm_results_obj.Lambda
+            # 需要 final_data_processed 来确定目标变量位置
+            if 'final_data_processed' in locals() and final_data_processed is not None and TARGET_VARIABLE in final_data_processed.columns:
+                try:
+                    target_var_index_pos = final_data_processed.columns.get_loc(TARGET_VARIABLE)
+                    if final_loadings is not None and target_var_index_pos < final_loadings.shape[0]:
+                        lambda_target = final_loadings[target_var_index_pos, :]
+                        print(f"  成功提取目标变量 '{TARGET_VARIABLE}' 的载荷向量用于贡献度计算。")
+                    else:
+                        print(f"  错误: 无法在最终载荷矩阵中定位目标变量索引 ({target_var_index_pos}) 或载荷矩阵为空。")
+                except (KeyError, IndexError, AttributeError) as e_lambda:
+                    print(f"  提取目标变量载荷时出错: {e_lambda}")
+            else:
+                print("  警告: 无法确定目标变量在最终载荷中的位置，因为 final_data_processed 不可用。")
+        else:
+             print("  警告: 无法提取目标载荷，最终模型结果或其载荷矩阵不可用。")
+
+        if lambda_target is not None and 'final_k_factors' in locals() and final_k_factors > 0:
+            lambda_target_sq = lambda_target ** 2
+            sum_lambda_target_sq = np.sum(lambda_target_sq)
+            
+            if sum_lambda_target_sq > 1e-9:
+                pct_contribution_common = (lambda_target_sq / sum_lambda_target_sq) * 100
+            else:
+                pct_contribution_common = np.zeros_like(lambda_target_sq) * np.nan
+                print("  警告: 目标变量的平方载荷和过小，无法计算对共同方差的百分比贡献。")
+            
+            pct_contribution_total = lambda_target_sq * 100
+
+            contribution_results_df = pd.DataFrame({
+                '因子 (Factor)': [f'Factor{i+1}' for i in range(final_k_factors)],
+                '载荷 (Loading)': lambda_target,
+                '平方载荷 (Loading^2)': lambda_target_sq,
+                '对共同方差贡献 (%)': pct_contribution_common,
+                '对总方差贡献(近似 %)': pct_contribution_total
+            })
+            contribution_results_df = contribution_results_df.sort_values(by='对总方差贡献(近似 %)', ascending=False)
+
+            print("  各因子对目标变量方差贡献度计算完成:")
+            print(contribution_results_df.to_string(index=False, float_format="%.4f"))
+            print(f"  目标变量共同度 (Communality): {sum_lambda_target_sq:.4f}")
+            
+            factor_contributions = contribution_results_df.set_index('因子 (Factor)')['对总方差贡献(近似 %)'].to_dict()
+            print(f"[DEBUG] Factor contributions prepared: {factor_contributions}")
+        elif lambda_target is None:
+            print("  未能成功提取目标载荷，跳过贡献度计算。")
+        else: # final_k_factors 无效
+            print("  错误: 最终因子数无效，无法计算贡献度。")
+
+    except Exception as e_contrib_main:
+        print(f"  计算因子对目标变量贡献度时发生错误: {e_contrib_main}")
+        import traceback
+        traceback.print_exc()
+    # --- 结束因子贡献度计算 ---
+    # <-- 移动因子贡献度计算块结束 -->
         
     if final_dfm_results_obj is not None and data_for_analysis is not None: 
         try:
@@ -1417,20 +1900,25 @@ def run_tuning():
             print(f"  run_output_dir = '{run_output_dir}'") # 打印传入的目录
             print(f"  timestamp_str = '{timestamp_str}'") # 打印传入的时间戳
             analyze_and_save_final_results(
-                run_output_dir=run_output_dir,       # 确保传递的是这里定义的变量
-                timestamp_str=timestamp_str,         # 确保传递的是这里定义的变量
-                all_data_full=all_data_aligned_weekly, 
-                data_for_analysis=data_for_analysis, 
+                run_output_dir=run_output_dir,
+                timestamp_str=timestamp_str,
+                excel_output_path=excel_output_file,
+                all_data_full=all_data_aligned_weekly,
+                data_for_analysis=data_for_analysis,
                 target_variable=TARGET_VARIABLE,
                 final_dfm_results=final_dfm_results_obj,
-                best_variables=final_variables, 
+                best_variables=final_variables,
                 best_params=final_params,
                 var_type_map=var_type_map,
-                best_avg_hit_rate_tuning=final_combined_hit_rate, # 新：胜率优先
-                best_avg_mae_tuning=final_combined_mae,          # 新：RMSE (变量名未改)
-                total_runtime_seconds=total_runtime_seconds
+                best_avg_hit_rate_tuning=final_combined_hit_rate,
+                best_avg_mae_tuning=final_combined_mae,
+                total_runtime_seconds=total_runtime_seconds,
+                # <-- 传递计算好的结果或 None -->
+                factor_contributions=factor_contributions, 
+                final_transform_log=final_transform_details,
+                pca_results_df=pca_results_df,
+                contribution_results_df=contribution_results_df
             )
-            # --- 结束再次确认 --- 
         except Exception as e:
             print(f"分析和保存最终结果时出错: {e}")
             import traceback
