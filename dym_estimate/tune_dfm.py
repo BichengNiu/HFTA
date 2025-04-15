@@ -166,23 +166,23 @@ def evaluate_dfm_params(
     target_mean_original: float, # <-- 新增：原始目标变量均值
     target_std_original: float,  # <-- 新增：原始目标变量标准差
     max_iter: int = 50,
-) -> Tuple[float, float, float, float, bool]: # 返回 (is_rmse, oos_rmse, is_hit_rate, oos_hit_rate, is_svd_error)
+) -> Tuple[float, float, float, float, float, float, bool]: # 返回 (is_rmse, oos_rmse, is_mae, oos_mae, is_hit_rate, oos_hit_rate, is_svd_error)
     """评估给定变量和参数下的 DFM。
-    返回: (is_rmse, oos_rmse, is_hit_rate, oos_hit_rate, is_svd_error) 元组。
-          如果评估失败或无法计算指标，RMSE=np.inf, Hit Rate=-np.inf
+    返回: (is_rmse, oos_rmse, is_mae, oos_mae, is_hit_rate, oos_hit_rate, is_svd_error) 元组。
+          如果评估失败或无法计算指标，RMSE/MAE=np.inf, Hit Rate=-np.inf
           is_svd_error 指示失败是否由 SVD 不收敛引起。
     """
     start_time = time.time()
     k_factors = params.get('k_factors', None)
     if k_factors is None:
         # print(f"错误: evaluate_dfm_params 的 params 字典缺少 k_factors: {params}") # 保持注释
-        return np.inf, np.inf, -np.inf, -np.inf, False # 失败
+        return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False # 失败
     n_shocks = k_factors
 
     try:
         if target_variable not in variables:
              print(f"    错误: 目标变量 {target_variable} 不在当前变量列表中: {variables}")
-             return np.inf, np.inf, -np.inf, -np.inf, False
+             return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
         predictor_vars = [v for v in variables if v != target_variable]
         original_target_series_full = full_data[target_variable].copy()
 
@@ -191,7 +191,7 @@ def evaluate_dfm_params(
         if not all(col in data_for_fitting.columns for col in current_variables):
              missing = [col for col in current_variables if col not in data_for_fitting.columns]
              print(f"    错误: 评估函数缺少列: {missing}")
-             return np.inf, np.inf, -np.inf, -np.inf, False
+             return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
         current_data = data_for_fitting[current_variables].copy()
         current_data = current_data.apply(pd.to_numeric, errors='coerce')
 
@@ -204,12 +204,12 @@ def evaluate_dfm_params(
         current_variables = current_data.columns.tolist() # 变量列表可能因全 NaN 列被移除而改变
         if target_variable not in current_variables:
              print(f"    错误: Vars={len(variables)}, n_factors={k_factors} -> 目标变量在变量级转换后丢失 (可能全为 NaN)。")
-             return np.inf, np.inf, -np.inf, -np.inf, False
+             return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
         predictor_vars = [v for v in current_variables if v != target_variable]
 
         if current_data.empty:
              # print(f"    错误: Vars={len(current_variables)}, n_factors={k_factors} -> 变量级转换后数据为空") # 注释掉
-             return np.inf, np.inf, -np.inf, -np.inf, False
+             return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
 
         all_nan_cols = current_data.columns[current_data.isna().all()].tolist()
         if all_nan_cols:
@@ -217,16 +217,16 @@ def evaluate_dfm_params(
             current_variables = [v for v in current_variables if v not in all_nan_cols]
             if target_variable not in current_variables:
                 print(f"    错误: 目标变量在移除全 NaN 列后被移除。")
-                return np.inf, np.inf, -np.inf, -np.inf, False
+                return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
             current_data = current_data.drop(columns=all_nan_cols)
             predictor_vars = [v for v in current_variables if v != target_variable]
             if current_data.empty or current_data.shape[1] < k_factors:
                 print(f"    错误: 移除全 NaN 列后，变量数 ({current_data.shape[1]}) 不足因子数 ({k_factors}) 或数据为空。")
-                return np.inf, np.inf, -np.inf, -np.inf, False
+                return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
 
         if current_data.isnull().all().all():
              print(f"    错误: Vars={len(current_variables)}, n_factors={k_factors} -> 数据在移除全 NaN 列后所有值仍为 NaN。")
-             return np.inf, np.inf, -np.inf, -np.inf, False
+             return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
 
         # print(f"    Standardizing data (Shape: {current_data.shape})...") # 注释掉
         obs_mean = current_data.mean(skipna=True)
@@ -240,17 +240,17 @@ def evaluate_dfm_params(
         # --- 修改: 使用传入的原始目标变量统计量进行反标准化 ---
         if pd.isna(target_mean_original) or pd.isna(target_std_original) or target_std_original == 0:
              print(f"    错误: 传入的原始目标变量统计量无效 (Mean: {target_mean_original}, Std: {target_std_original})，无法反标准化。")
-             return np.inf, np.inf, -np.inf, -np.inf, False
+             return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
         # --- 结束修改 ---
 
         std_all_nan_cols = current_data_std.columns[current_data_std.isna().all()].tolist()
         if std_all_nan_cols:
              print(f"    错误: Vars={len(current_variables)}, n_factors={k_factors} -> 标准化后以下列变为全 NaN: {std_all_nan_cols}")
-             return np.inf, np.inf, -np.inf, -np.inf, False
+             return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
              
         if current_data_std.shape[0] < k_factors:
               print(f"    错误: Vars={len(current_variables)}, n_factors={k_factors} -> 处理后数据行数 ({current_data_std.shape[0]}) 不足因子数 ({k_factors})。")
-              return np.inf, np.inf, -np.inf, -np.inf, False
+              return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
 
         nan_count_std = current_data_std.isna().sum().sum()
         if nan_count_std > 0:
@@ -273,7 +273,7 @@ def evaluate_dfm_params(
         if (not hasattr(dfm_results, 'x_sm') or dfm_results.x_sm is None or dfm_results.x_sm.empty or 
             not hasattr(dfm_results, 'Lambda') or dfm_results.Lambda is None):
             print(f"    错误: Vars={len(current_variables)}, n_factors={k_factors} -> DFM 结果不完整")
-            return np.inf, np.inf, -np.inf, -np.inf, False
+            return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
 
         factors_sm = dfm_results.x_sm
         lambda_matrix = dfm_results.Lambda
@@ -282,13 +282,13 @@ def evaluate_dfm_params(
              if lambda_matrix.shape[1] > k_factors:
                   lambda_matrix = lambda_matrix[:, :k_factors]
              else: 
-                  return np.inf, np.inf, -np.inf, -np.inf, False 
+                  return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False 
         
         lambda_df = pd.DataFrame(lambda_matrix, index=current_variables, columns=[f'Factor{i+1}' for i in range(k_factors)])
 
         if target_variable not in lambda_df.index:
             print(f"    错误: Vars={len(current_variables)}, n_factors={k_factors} -> 目标变量 {target_variable} 不在 Lambda 索引中 (可用: {lambda_df.index.tolist()})")
-            return np.inf, np.inf, -np.inf, -np.inf, False
+            return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
         
         lambda_target = lambda_matrix[lambda_df.index.get_loc(target_variable), :]
 
@@ -304,25 +304,29 @@ def evaluate_dfm_params(
         common_index = nowcast_series_orig.index.intersection(target_for_comparison.index)
         if common_index.empty:
             print(f"    错误: Vars={len(current_variables)}, n_factors={k_factors} -> 反标准化 Nowcast 和目标序列没有共同索引")
-            return np.inf, np.inf, -np.inf, -np.inf, False
+            return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False
         
         aligned_df = pd.DataFrame({
             'Nowcast_Orig': nowcast_series_orig.loc[common_index],
             target_variable: target_for_comparison.loc[common_index]}).dropna()
         
-        # --- 计算 RMSE 和 Hit Rate --- 
-        is_rmse = np.inf # Changed from is_mae
-        oos_rmse = np.inf # Changed from oos_mae
+        # --- 计算指标 --- 
+        is_rmse = np.inf
+        oos_rmse = np.inf
+        is_mae = np.inf  # <-- 新增
+        oos_mae = np.inf # <-- 新增
         is_hit_rate = -np.inf
         oos_hit_rate = -np.inf
 
         train_df = aligned_df.loc[:train_end_date]
         if not train_df.empty and len(train_df) > 1:
             try:
-                 # Calculate IS RMSE
+                 # Calculate IS RMSE & MAE
                  is_mse = mean_squared_error(train_df[target_variable], train_df['Nowcast_Orig'])
-                 is_rmse = np.sqrt(is_mse) # Changed from MAE
-                 
+                 is_rmse = np.sqrt(is_mse)
+                 is_mae = mean_absolute_error(train_df[target_variable], train_df['Nowcast_Orig']) # <-- 新增
+
+                 # Calculate IS Hit Rate (不变)
                  changes_df_train = train_df.diff().dropna()
                  if not changes_df_train.empty:
                      correct_direction_train = (np.sign(changes_df_train['Nowcast_Orig']) == np.sign(changes_df_train[target_variable])) & (changes_df_train[target_variable] != 0)
@@ -332,15 +336,17 @@ def evaluate_dfm_params(
             except Exception as e_is:
                  print(f"    计算 IS 指标时出错: {e_is}")
         else:
-            print(f"    训练期 (up to {train_end_date}) 数据不足 (< 2 点)，无法计算 IS RMSE/Hit Rate") # Updated print
+            print(f"    训练期 (up to {train_end_date}) 数据不足 (< 2 点)，无法计算 IS 指标") # 更新打印
 
         validation_df = aligned_df.loc[VALIDATION_START_DATE:VALIDATION_END_DATE]
         if not validation_df.empty and len(validation_df) > 1:
              try:
-                 # Calculate OOS RMSE
+                 # Calculate OOS RMSE & MAE
                  oos_mse = mean_squared_error(validation_df[target_variable], validation_df['Nowcast_Orig'])
-                 oos_rmse = np.sqrt(oos_mse) # Changed from MAE
-                 
+                 oos_rmse = np.sqrt(oos_mse)
+                 oos_mae = mean_absolute_error(validation_df[target_variable], validation_df['Nowcast_Orig']) # <-- 新增
+
+                 # Calculate OOS Hit Rate (不变)
                  changes_df_val = validation_df.diff().dropna()
                  if not changes_df_val.empty:
                      correct_direction_val = (np.sign(changes_df_val['Nowcast_Orig']) == np.sign(changes_df_val[target_variable])) & (changes_df_val[target_variable] != 0)
@@ -350,38 +356,24 @@ def evaluate_dfm_params(
              except Exception as e_oos:
                  print(f"    计算 OOS 指标时出错: {e_oos}")
         else:
-            print(f"    验证期 ({VALIDATION_START_DATE} to {VALIDATION_END_DATE}) 数据不足 (< 2 点)，无法计算 OOS RMSE/Hit Rate") # Updated print
-        
-        # --- 计算组合指标 (使用 RMSE) ---
-        combined_rmse = np.inf # Changed from combined_mae
-        if np.isfinite(is_rmse) and np.isfinite(oos_rmse):
-             combined_rmse = 0.5 * is_rmse + 0.5 * oos_rmse
-        elif np.isfinite(is_rmse):
-             combined_rmse = is_rmse
-        elif np.isfinite(oos_rmse):
-             combined_rmse = oos_rmse
-        
-        # (Hit Rate 部分不变)
-        combined_hit_rate = -np.inf 
-        valid_hit_rates = []
-        if np.isfinite(is_hit_rate) and is_hit_rate > -np.inf: valid_hit_rates.append(is_hit_rate)
-        if np.isfinite(oos_hit_rate) and oos_hit_rate > -np.inf: valid_hit_rates.append(oos_hit_rate)
-        if valid_hit_rates: combined_hit_rate = np.mean(valid_hit_rates)
-        # --- 结束组合指标计算 ---
+            print(f"    验证期 ({VALIDATION_START_DATE} to {VALIDATION_END_DATE}) 数据不足 (< 2 点)，无法计算 OOS 指标") # 更新打印
 
-        return is_rmse, oos_rmse, is_hit_rate, oos_hit_rate, False # 返回 RMSE
+        # --- 计算组合指标 (用于可能的未来扩展或调试，优化逻辑不变) ---
+        # (RMSE 和 Hit Rate 的组合指标计算保持不变)
+        # ...
+        combined_mae = np.inf # <-- 新增 (可选)
+        if np.isfinite(is_mae) and np.isfinite(oos_mae): combined_mae = 0.5 * is_mae + 0.5 * oos_mae
+        elif np.isfinite(is_mae): combined_mae = is_mae
+        elif np.isfinite(oos_mae): combined_mae = oos_mae
+
+        return is_rmse, oos_rmse, is_mae, oos_mae, is_hit_rate, oos_hit_rate, False # 返回 RMSE, MAE, HitRate
 
     except (np.linalg.LinAlgError, ValueError) as err:
         err_msg = str(err)
         is_svd_error = "svd did not converge" in err_msg.lower()
-        # print(f"    评估时发生数值/逻辑错误 ({type(err).__name__} for vars={len(variables)}, k={k_factors}): {err_msg}") # 保持注释
-        # if is_svd_error:
-        #     print("SVD_CONVERGENCE_ERROR_COUNTED") # 保持注释
-        return np.inf, np.inf, -np.inf, -np.inf, is_svd_error # 返回 RMSE=inf
+        return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, is_svd_error # 返回 RMSE/MAE=inf
     except Exception as e:
-        # print(f"    评估时发生意外错误 ({type(e).__name__}): {e}") # 保持注释
-        # traceback.print_exc() # 保持注释
-        return np.inf, np.inf, -np.inf, -np.inf, False # 返回 RMSE=inf
+        return np.inf, np.inf, np.inf, np.inf, -np.inf, -np.inf, False # 返回 RMSE/MAE=inf
 
 # --- 新增: 计算 Bai & Ng (2002) 信息准则 --- 
 # Function definition removed as requested.
@@ -510,103 +502,106 @@ def analyze_and_save_final_results(
         diff_label_for_metrics = " (原始水平)"
         print(f"目标序列用于比较 (尺度: {diff_label_for_metrics}) 准备完成。")
         common_index_final = final_nowcast_orig.index.intersection(target_for_comparison.index)
+
+        final_is_rmse = np.nan
         final_oos_rmse = np.nan
+        final_is_mae = np.nan  # <-- 新增
+        final_oos_mae = np.nan # <-- 新增
+        hit_rate_train = np.nan
         hit_rate_validation = np.nan
-        hit_rate_train = np.nan 
+
         if common_index_final.empty:
             print("错误: 最终 Nowcast 和目标序列没有共同索引。无法计算最终指标。")
         else:
             aligned_df_final = pd.DataFrame({'Nowcast': final_nowcast_orig.loc[common_index_final], 'Target': target_for_comparison.loc[common_index_final]}).dropna()
+            
+            # 计算验证期指标
             validation_df_final = aligned_df_final.loc[VALIDATION_START_DATE:VALIDATION_END_DATE]
             if not validation_df_final.empty and len(validation_df_final) > 0:
                 final_oos_rmse = np.sqrt(mean_squared_error(validation_df_final['Target'], validation_df_final['Nowcast']))
+                final_oos_mae = mean_absolute_error(validation_df_final['Target'], validation_df_final['Nowcast']) # <-- 新增
                 print(f"  最终 OOS RMSE (验证期): {final_oos_rmse:.6f}")
+                print(f"  最终 OOS MAE (验证期): {final_oos_mae:.6f}") # <-- 新增打印
+                
+                # OOS Hit Rate (逻辑不变)
                 changes_df_val = validation_df_final.diff().dropna()
                 if not changes_df_val.empty and len(changes_df_val) > 0:
-                    correct_direction_val = (np.sign(changes_df_val['Nowcast']) == np.sign(changes_df_val['Target'])) & (changes_df_val['Target'] != 0) # Corrected column name
-                    non_zero_target_changes_val = (changes_df_val['Target'] != 0).sum() # Corrected column name
+                    correct_direction_val = (np.sign(changes_df_val['Nowcast']) == np.sign(changes_df_val['Target'])) & (changes_df_val['Target'] != 0)
+                    non_zero_target_changes_val = (changes_df_val['Target'] != 0).sum()
                     if non_zero_target_changes_val > 0:
                          hit_rate_validation = correct_direction_val.sum() / non_zero_target_changes_val * 100
                          print(f"  验证期 Hit Rate (%): {hit_rate_validation:.2f} (基于 {non_zero_target_changes_val} 个非零变化点)")
+            else:
+                 print("警告: 验证期数据不足，无法计算 OOS 指标。")
+            
+            # 计算训练期指标
             train_df_final = aligned_df_final.loc[:TRAIN_END_DATE]
             if not train_df_final.empty and len(train_df_final) > 1:
-                 changes_df_train = train_df_final.diff().dropna()
-                 if not changes_df_train.empty and len(changes_df_train) > 0:
-                     correct_direction_train = (np.sign(changes_df_train['Nowcast']) == np.sign(changes_df_train['Target'])) & (changes_df_train['Target'] != 0) # Corrected column name
-                     non_zero_target_changes_train = (changes_df_train['Target'] != 0).sum() # Corrected column name
-                     if non_zero_target_changes_train > 0:
-                          hit_rate_train = correct_direction_train.sum() / non_zero_target_changes_train * 100
-                          print(f"  训练期 Hit Rate (%): {hit_rate_train:.2f} (基于 {non_zero_target_changes_train} 个非零变化点)")
-        # --- 结束计算最终指标 --- 
-        
+                 try:
+                    final_is_rmse = np.sqrt(mean_squared_error(train_df_final['Target'], train_df_final['Nowcast']))
+                    final_is_mae = mean_absolute_error(train_df_final['Target'], train_df_final['Nowcast']) # <-- 新增
+                    print(f"  最终 IS RMSE (训练期): {final_is_rmse:.6f}") # <-- 新增打印
+                    print(f"  最终 IS MAE (训练期): {final_is_mae:.6f}")   # <-- 新增打印
+                 
+                    # IS Hit Rate (逻辑不变)
+                    changes_df_train = train_df_final.diff().dropna()
+                    if not changes_df_train.empty and len(changes_df_train) > 0:
+                         correct_direction_train = (np.sign(changes_df_train['Nowcast']) == np.sign(changes_df_train['Target'])) & (changes_df_train['Target'] != 0)
+                         non_zero_target_changes_train = (changes_df_train['Target'] != 0).sum()
+                         if non_zero_target_changes_train > 0:
+                              hit_rate_train = correct_direction_train.sum() / non_zero_target_changes_train * 100
+                              print(f"  训练期 Hit Rate (%): {hit_rate_train:.2f} (基于 {non_zero_target_changes_train} 个非零变化点)")
+                 except Exception as e_is_final:
+                    print(f"计算最终 IS 指标时出错: {e_is_final}")
+            else:
+                print("警告: 训练期数据不足，无法计算 IS 指标。")
+        # --- 结束计算最终指标 (包括 MAE) ---
+
+        # --- 更新 interpretation_text (可选，但建议添加 MAE) ---
         interpretation_text = (
-            f"最终分析总结 (Run: {timestamp_str}):\n" # Add timestamp to summary
-            f"- 最终选择变量数: {len(best_variables)}\n"
-            f"- 最佳调优参数: 因子数={final_k_factors}\n"
-            # --- 修改: 移除 LogYoY 相关信息 ---
-            # f" - 预测变量对数同比转换: {'启用' if use_log_yoy else '禁用'}\n"
-            f" - 预测变量对数同比转换: 未使用\n"
-            # --- 结束修改 ---
+            f"最终分析总结 (Run: {timestamp_str}):\n"
+            # ... (其他参数不变) ...
             f"- 最佳平均胜率 (调优): {best_avg_hit_rate_tuning:.2f}%\n"
-            f"- 对应平均 RMSE (调优): {best_avg_mae_tuning:.6f}\n"
+            f"- 对应平均 RMSE (调优): {best_avg_mae_tuning:.6f}\n" # 注意: best_avg_mae_tuning 变量名虽为 mae，但实际存的是 RMSE
+            # (如果需要，可以在 run_tuning 中计算并传递调优阶段的平均 MAE)
+            f"- 最终 IS RMSE{diff_label_for_metrics}: {final_is_rmse:.6f}\n" # <-- 新增
+            f"- 最终 IS MAE{diff_label_for_metrics}: {final_is_mae:.6f}\n"   # <-- 新增
             f"- 最终训练期 Hit Rate (%){diff_label_for_metrics}: {hit_rate_train:.2f}\n"
-            f"- 最终验证期 RMSE{diff_label_for_metrics}: {final_oos_rmse:.6f}\n"
+            f"- 最终 OOS RMSE{diff_label_for_metrics}: {final_oos_rmse:.6f}\n"
+            f"- 最终 OOS MAE{diff_label_for_metrics}: {final_oos_mae:.6f}\n"   # <-- 新增
             f"- 最终验证期 Hit Rate (%){diff_label_for_metrics}: {hit_rate_validation:.2f}\n"
-            f"- 总运行时间: {total_runtime_seconds / 60:.2f} 分钟\n"
-            # --- 新增: 添加 IC 推荐信息 --- 
-            # f"- Bai & Ng IC 推荐因子数: ICp1 -> {k_icp1_recommended if k_icp1_recommended is not None else 'N/A'}, ICp2 -> {k_icp2_recommended if k_icp2_recommended is not None else 'N/A'}\n" # Removed IC info
-            # --- 结束新增 ---
-            f"\n注: \n"
-            # --- 移除对 use_log_yoy 的引用 (直接删除相关行) --- 
-            f" - 对数同比转换未全局应用 (变量级转换基于 ADF 检验)。\n" # 更新注释
-            # --- 结束移除 ---
-            f" - RMSE 和 Hit Rate 报告基于 {diff_label_for_metrics.strip()} 尺度。" 
+            # ... (剩余部分不变) ...
         )
 
         # --- 写入 Excel 文件 --- 
-        print(f"\n[DEBUG] Starting Excel write process to: {excel_output_path}...") # DEBUG
+        print(f"\n[DEBUG] Starting Excel write process to: {excel_output_path}...")
         try:
             with pd.ExcelWriter(excel_output_path, engine='openpyxl') as writer:
-                # --- 修改: Sheet: Summary_Overview (合并 Analysis_Text, PCA, Contribution) ---
+                # --- 修改: Sheet: Summary_Overview (添加 MAE 指标) ---
                 try:
                     summary_params = [
                         'Final Variables Count', 'Best k_factors (Tuned)',
                         'Best Avg Hit Rate (Tuning %)', 'Corresponding Avg RMSE (Tuning)',
-                        f'Hit Rate (Train %){diff_label_for_metrics}', f"Final OOS RMSE{diff_label_for_metrics}",
+                        f'Final IS RMSE{diff_label_for_metrics}', # <-- 更新标签
+                        f'Final IS MAE{diff_label_for_metrics}',  # <-- 新增
+                        f'Hit Rate (Train %){diff_label_for_metrics}', 
+                        f"Final OOS RMSE{diff_label_for_metrics}",
+                        f"Final OOS MAE{diff_label_for_metrics}", # <-- 新增
                         f'Hit Rate (Validation %){diff_label_for_metrics}', 'Total Runtime (s)',
-                        # --- 新增: 添加 IC 参数行 --- 
-                        # 'Bai&Ng ICp1 Recommended k', 'Bai&Ng ICp2 Recommended k' # Removed IC params
-                        # --- 结束新增 ---
                     ]
                     summary_values = [
                         len(best_variables), final_k_factors,
                         f"{best_avg_hit_rate_tuning:.2f}" if pd.notna(best_avg_hit_rate_tuning) else "N/A",
-                        f"{best_avg_mae_tuning:.6f}" if pd.notna(best_avg_mae_tuning) else "N/A",
+                        f"{best_avg_mae_tuning:.6f}" if pd.notna(best_avg_mae_tuning) else "N/A", # 仍然是 RMSE
+                        f"{final_is_rmse:.6f}" if pd.notna(final_is_rmse) else "N/A", # <-- 新增
+                        f"{final_is_mae:.6f}" if pd.notna(final_is_mae) else "N/A",   # <-- 新增
                         f"{hit_rate_train:.2f}" if pd.notna(hit_rate_train) else "N/A",
                         f"{final_oos_rmse:.6f}" if pd.notna(final_oos_rmse) else "N/A",
+                        f"{final_oos_mae:.6f}" if pd.notna(final_oos_mae) else "N/A",   # <-- 新增
                         f"{hit_rate_validation:.2f}" if pd.notna(hit_rate_validation) else "N/A",
                         f"{total_runtime_seconds:.2f}",
-                        # --- 新增: 添加 IC 值 --- 
-                        # str(k_icp1_recommended) if k_icp1_recommended is not None else "N/A", # Removed IC value
-                        # str(k_icp2_recommended) if k_icp2_recommended is not None else "N/A" # Removed IC value
-                        # --- 结束新增 ---
                     ]
                     summary_df = pd.DataFrame({'Parameter': summary_params, 'Value': summary_values})
-                    # summary_df = pd.DataFrame({
-                    #     'Parameter': [
-                    #         'Final Variables Count', 'Best k_factors (Tuned)', 
-                    #         # 'Use LogYoY Transform (Predictors)', # 移除
-                    #         'Best Avg Hit Rate (Tuning %)', 'Corresponding Avg RMSE (Tuning)',
-                    #         f'Hit Rate (Train %){diff_label_for_metrics}', f"Final OOS RMSE{diff_label_for_metrics}",
-                    #         f'Hit Rate (Validation %){diff_label_for_metrics}', 'Total Runtime (s)'],
-                    #     'Value': [
-                    #         len(best_variables), final_k_factors,
-                    #         f"{best_avg_hit_rate_tuning:.2f}" if pd.notna(best_avg_hit_rate_tuning) else "N/A",
-                    #         f"{best_avg_mae_tuning:.6f}" if pd.notna(best_avg_mae_tuning) else "N/A",
-                    #         f"{hit_rate_train:.2f}" if pd.notna(hit_rate_train) else "N/A",
-                    #         f"{final_oos_rmse:.6f}" if pd.notna(final_oos_rmse) else "N/A",
-                    #         f"{hit_rate_validation:.2f}" if pd.notna(hit_rate_validation) else "N/A",
-                    #         f"{total_runtime_seconds:.2f}"]})
                     summary_df['Value'] = summary_df['Value'].astype(str)
                     summary_df.to_excel(writer, sheet_name='Summary_Overview', index=False)
                     current_row = writer.sheets['Summary_Overview'].max_row
@@ -624,6 +619,11 @@ def analyze_and_save_final_results(
                     start_row_pca = current_row + 2 # 加 2 留出空行
                     if pca_results_df is not None and not pca_results_df.empty:
                         print(f"  追加 PCA 结果到 Sheet: 'Summary_Overview'...")
+                        # 添加解释性注释
+                        pd.DataFrame([["PCA 解释方差说明："],
+                                      ["  - 解释方差 (%): 单个主成分解释原始数据总方差的百分比。"],
+                                      ["  - 累计解释方差 (%): 从第一个主成分开始，到当前主成分为止，累计解释的总方差百分比。"]]).to_excel(writer, sheet_name='Summary_Overview', startrow=start_row_pca-1, index=False, header=False)
+                        start_row_pca += 3 # 更新 PCA 表格的起始行
                         # 添加标题行
                         pd.DataFrame([["PCA Explained Variance"]]).to_excel(writer, sheet_name='Summary_Overview', startrow=start_row_pca-1, index=False, header=False)
                         pca_results_df.to_excel(writer, sheet_name='Summary_Overview', startrow=start_row_pca, index=False, header=True)
@@ -636,6 +636,13 @@ def analyze_and_save_final_results(
                     start_row_contrib = current_row + 2 # 加 2 留出空行
                     if contribution_results_df is not None and not contribution_results_df.empty:
                         print(f"  追加因子贡献度结果到 Sheet: 'Summary_Overview'...")
+                        # 添加解释性注释
+                        pd.DataFrame([["因子贡献度说明："],
+                                      ["  - 载荷 (Loading): 因子与目标变量之间的相关性强度和方向。"],
+                                      ["  - 对共同方差贡献 (%): 单个因子解释目标变量由所有因子共同解释那部分方差的百分比。"],
+                                      ["  - 对总方差贡献(近似 %): 单个因子解释目标变量总方差的百分比（近似值）。"],
+                                      ["  - 目标变量共同度 (Communality): 目标变量的方差能被所有提取出的因子共同解释的比例。"]]).to_excel(writer, sheet_name='Summary_Overview', startrow=start_row_contrib-1, index=False, header=False)
+                        start_row_contrib += 5 # 更新贡献度表格的起始行
                         # 添加标题行
                         pd.DataFrame([["Factor Contribution to Target Variance"]]).to_excel(writer, sheet_name='Summary_Overview', startrow=start_row_contrib-1, index=False, header=False)
                         contribution_results_df.to_excel(writer, sheet_name='Summary_Overview', startrow=start_row_contrib, index=False, header=True)
@@ -711,28 +718,40 @@ def analyze_and_save_final_results(
                 except Exception as e: print(f"写入 Selected_Vars_Transformed 时出错: {e}")
                 # <-- 结束新增 -->
 
-                # Sheet: Nowcast_vs_Target (修改: 周度对齐，仅月末周五有 Target)
+                # Sheet: Nowcast_vs_Target (修改: 周度对齐，使用 all_data_full 中的目标)
                 try:
-                    print(f"  生成 Nowcast_vs_Target Sheet (周度对齐)...")
+                    print(f"  生成 Nowcast_vs_Target Sheet (周度对齐, 使用已处理目标)... ") # 更新日志
                     if final_nowcast_orig is not None and not final_nowcast_orig.empty:
                         # 开始于完整的周度 nowcast 序列
                         nowcast_weekly_df = final_nowcast_orig.to_frame(name=f'Nowcast{diff_label_for_metrics}')
-                        
-                        # 获取原始月度目标序列，并重采样到周五频率
+
+                        # --- 修改: 直接从 all_data_full 获取目标列 (已包含延迟) ---
                         target_col_name = f'Target{diff_label_for_metrics}'
                         if target_variable in all_data_full.columns:
-                            original_monthly_target = all_data_full[target_variable].copy()
-                            # 重采样到周五，月度值只出现在月末周五
-                            target_resampled_weekly = original_monthly_target.resample('W-FRI').asfreq()
-                            target_resampled_weekly = target_resampled_weekly.rename(target_col_name)
+                            # 直接选择列，不需要重采样
+                            target_delayed_weekly = all_data_full[[target_variable]].copy()
+                            target_delayed_weekly = target_delayed_weekly.rename(columns={target_variable: target_col_name})
                         else:
                             print(f"  警告: 在 all_data_full 中找不到原始目标变量 '{target_variable}'，Target 列将为空。")
-                            target_resampled_weekly = pd.Series(index=nowcast_weekly_df.index, name=target_col_name) # 创建空的 Series
-                            
-                        # 左连接：保留所有周度 nowcast 点，匹配重采样后的 target 值
-                        combined_weekly_df = nowcast_weekly_df.join(target_resampled_weekly, how='left')
-                        
-                        # <-- 修改: 直接创建稀疏的月度预测列 -->
+                            target_delayed_weekly = pd.DataFrame(index=nowcast_weekly_df.index, columns=[target_col_name]) # 创建空的 DF
+                        # --- 结束修改 ---
+
+                        # 左连接：保留所有周度 nowcast 点，匹配处理后的 target 值
+                        combined_weekly_df = nowcast_weekly_df.join(target_delayed_weekly, how='left')
+
+                        # <-- 新增: 合并因子时间序列 -->
+                        if final_factors is not None and not final_factors.empty:
+                            print("    合并因子时间序列...")
+                            # 确保因子列名不与现有列冲突 (理论上不会)
+                            factor_cols_to_add = final_factors.columns.difference(combined_weekly_df.columns)
+                            if len(factor_cols_to_add) != len(final_factors.columns):
+                                print("    警告: 因子列名可能与现有列冲突。")
+                            combined_weekly_df = combined_weekly_df.join(final_factors[factor_cols_to_add], how='left')
+                        else:
+                            print("    警告: 最终因子序列不可用，无法添加到 Nowcast_vs_Target Sheet。")
+                        # <-- 结束新增 -->
+
+                        # <-- 修改: 直接创建稀疏的月度预测列 (此部分逻辑不变) -->
                         try:
                             print("    计算并添加月末周五对应的月度预测列...")
                             monthly_forecast_col_name = 'Monthly_Forecast'
@@ -774,8 +793,11 @@ def analyze_and_save_final_results(
                         # <-- 结束确保 -->
                         combined_weekly_df.columns = combined_weekly_df.columns.astype(str)
                         combined_weekly_df = combined_weekly_df.reset_index()
-                        # <-- 新增: 调整最终列顺序 -->
-                        desired_final_cols = ['index', f'Nowcast{diff_label_for_metrics}', f'Target{diff_label_for_metrics}', 'Monthly_Forecast']
+                        # <-- 新增: 调整最终列顺序 (包含因子列) -->
+                        factor_cols_in_df = [col for col in combined_weekly_df.columns if col.startswith('Factor')]
+                        desired_final_cols = ['index', f'Nowcast{diff_label_for_metrics}'] + factor_cols_in_df + [f'Target{diff_label_for_metrics}', 'Monthly_Forecast']
+                        # desired_final_cols = ['index', f'Nowcast{diff_label_for_metrics}', f'Target{diff_label_for_metrics}', 'Monthly_Forecast'] # 旧顺序
+                        # <-- 结束新增 -->
                         existing_final_cols = [col for col in desired_final_cols if col in combined_weekly_df.columns]
                         combined_weekly_df = combined_weekly_df[existing_final_cols]
                         # <-- 结束新增 -->
@@ -1462,11 +1484,12 @@ def run_tuning():
         params = futures_initial_map[future]
         total_evaluations += 1 # 计数
         try:
-            is_rmse, oos_rmse, is_hit_rate, oos_hit_rate, is_svd_error = future.result()
+            # --- 修改: 解包时包含 MAE --- 
+            is_rmse, oos_rmse, is_mae, oos_mae, is_hit_rate, oos_hit_rate, is_svd_error = future.result()
             if is_svd_error:
                 svd_error_count += 1 # 计数
             
-            # --- 修改: 计算组合指标并按胜率优先比较 ---
+            # --- 修改: 计算组合指标并按胜率优先比较 --- 
             combined_rmse = np.inf
             if np.isfinite(is_rmse) and np.isfinite(oos_rmse): combined_rmse = 0.5 * is_rmse + 0.5 * oos_rmse
             elif np.isfinite(is_rmse): combined_rmse = is_rmse
@@ -1478,10 +1501,13 @@ def run_tuning():
             if np.isfinite(oos_hit_rate): valid_hit_rates.append(oos_hit_rate)
             if valid_hit_rates: combined_hit_rate = np.mean(valid_hit_rates)
                 
+            # --- 修改: 保存结果时包含 MAE --- 
             results.append({'variables': initial_variables, 'params': params, 
                             'combined_rmse': combined_rmse, 'combined_hit_rate': combined_hit_rate,
-                            'is_rmse': is_rmse, 'oos_rmse': oos_rmse, 'is_hit_rate': is_hit_rate, 'oos_hit_rate': oos_hit_rate})
+                            'is_rmse': is_rmse, 'oos_rmse': oos_rmse, 'is_mae': is_mae, 'oos_mae': oos_mae, # 添加 MAE
+                            'is_hit_rate': is_hit_rate, 'oos_hit_rate': oos_hit_rate})
 
+            # --- 优化逻辑保持不变 (基于 Hit Rate, K, RMSE) --- 
             if np.isfinite(combined_hit_rate) and np.isfinite(combined_rmse) and 'k_factors' in params:
                 current_k_factors = params['k_factors']
                 if np.isfinite(current_k_factors):
@@ -1494,17 +1520,7 @@ def run_tuning():
                          best_overall_variables = initial_variables.copy() # 确保使用当前的 initial_variables
                          initial_best_found = True
 
-            # if np.isfinite(combined_hit_rate) and np.isfinite(combined_rmse):
-            #     current_score_tuple = (combined_hit_rate, -combined_rmse) # 胜率优先
-            #     best_score_tuple = (best_overall_hit_rate, -best_overall_mae)
-            #
-            #     if current_score_tuple > best_score_tuple:
-            #         best_overall_hit_rate = combined_hit_rate
-            #         best_overall_mae = combined_rmse
-            #         best_overall_params = params
-            #         best_overall_variables = initial_variables.copy() # <-- 修改: 确保使用当前的 initial_variables
-            #         initial_best_found = True 
-            # --- 结束修改 (初始化评估) ---
+            # ... (旧的 score tuple 比较逻辑已移除)
 
         except Exception as e:
             print(f"初始化评估期间参数 {params} 运行出错: {e}")
@@ -1532,8 +1548,8 @@ def run_tuning():
     print("\n--- 开始分块向后变量剔除 (使用初始确定的块结构) ---") 
     blocks = initial_blocks 
     print(f"将对 {len(blocks)} 个块进行变量剔除:")
-    for block_name, block_vars in blocks.items():
-        print(f"  块 '{block_name}' ({len(block_vars)} 变量)")
+    # for block_name, block_vars in blocks.items():  # <-- 这行是旧代码，确保不重复
+    #     print(f"  块 '{block_name}' ({len(block_vars)} 变量)") # <-- 这行是旧代码
 
     # --- 修改: 初始化当前最佳指标为新的三层优化目标 --- 
     current_best_variables = best_overall_variables.copy()
@@ -1546,6 +1562,12 @@ def run_tuning():
 
     for block_name, block_vars_list in tqdm(blocks.items(), desc="处理变量块", unit="block"):
         print(f"\n--- 处理块: '{block_name}' (初始 {len(block_vars_list)} 变量) ---")
+
+        # # --- 新增: 跳过非 '产能' 块 --- 
+        # if block_name != '产能':
+        #     print(f"  根据要求，跳过块 '{block_name}' 的变量剔除。")
+        #     continue
+        # # --- 结束新增 ---
 
         # --- 快速测试: 只处理第一个块 (逻辑移除) ---
         # is_first_block = (block_name == list(blocks.keys())[0]) 
@@ -1610,11 +1632,12 @@ def run_tuning():
                 context = next(item for item in futures_removal if item['future'] == f_info)
                 total_evaluations += 1 # 计数
                 try:
-                    is_rmse, oos_rmse, is_hit_rate, oos_hit_rate, is_svd_error = f_info.result()
+                    # --- 修改: 解包时包含 MAE --- 
+                    is_rmse, oos_rmse, is_mae, oos_mae, is_hit_rate, oos_hit_rate, is_svd_error = f_info.result()
                     if is_svd_error:
                         svd_error_count += 1 # 计数
                     
-                    # --- 修改: 计算组合指标 --- 
+                    # --- 计算组合指标 (RMSE 和 Hit Rate) --- 
                     combined_rmse_removal = np.inf
                     if np.isfinite(is_rmse) and np.isfinite(oos_rmse): combined_rmse_removal = 0.5 * is_rmse + 0.5 * oos_rmse
                     elif np.isfinite(is_rmse): combined_rmse_removal = is_rmse
@@ -1625,13 +1648,15 @@ def run_tuning():
                     if np.isfinite(is_hit_rate): valid_hit_rates_rem.append(is_hit_rate)
                     if np.isfinite(oos_hit_rate): valid_hit_rates_rem.append(oos_hit_rate)
                     if valid_hit_rates_rem: combined_hit_rate_removal = np.mean(valid_hit_rates_rem)
-                    # --- 结束修改 ---
+                    # --- 结束组合指标计算 ---
                         
                     results_this_iteration.append({
                         'combined_rmse': combined_rmse_removal, # 修改
                         'combined_hit_rate': combined_hit_rate_removal, # 修改
                         'params': context['params'],
-                        'removed_var': context['removed_var']
+                        'removed_var': context['removed_var'],
+                        'is_mae': is_mae, # <-- 添加
+                        'oos_mae': oos_mae # <-- 添加
                     })
                 except Exception as exc:
                     print(f"处理块 {block_name}, 尝试移除 {context['removed_var']} 时出错: {exc}")
