@@ -43,11 +43,10 @@ _run_tuning_executed = False
 
 # --- 新增：是否使用 Log(Yt) - Log(Yt-52) 转换 (根据用户要求设为 True) ---
 # *** MODIFIED: Set USE_LOG_YOY_TRANSFORM to True based on user request ***
-USE_LOG_YOY_TRANSFORM = True # 设置为 True，对预测变量进行对数同比转换，并跳过后续差分
 
 # --- 常量 ---
 # *** MODIFIED: Update Excel file if different, TARGET_VARIABLE, TARGET_FREQ ***
-EXCEL_DATA_FILE = 'dym_estimate/经济数据库.xlsx'
+EXCEL_DATA_FILE = '经济数据库.xlsx'
 TARGET_VARIABLE = '规模以上工业增加值:当月同比' # NEW Target Variable
 TARGET_FREQ = 'W-FRI'                   # Target frequency remains Weekly Friday
 # *** ADDED: Define TARGET_SHEET_NAME constant ***
@@ -58,9 +57,13 @@ DETAILED_LOG_FILE = "调优日志.txt"
 FINAL_FACTOR_FILE = os.path.join('dfm_result', 'final_factors.png')
 FINAL_PLOT_FILE = os.path.join('dfm_result', 'final_nowcast_comparison.png')
 EXCEL_OUTPUT_FILE = os.path.join('dfm_result', 'result.xlsx') # Renamed output file
-START_DATE = '2020-01-01'
-END_DATE = '2024-12-31'
-N_ITER_FIXED = 2 # 临时修改为 2 次迭代用于快速测试
+
+# --- 测试模式开关 和 迭代次数 ---
+TEST_MODE = False # 设置为 True 以运行快速测试版
+N_ITER_FIXED = 30 # 切换为完整版迭代次数
+N_ITER_TEST = 5   # 测试版使用的迭代次数
+n_iter_to_use = N_ITER_TEST if TEST_MODE else N_ITER_FIXED
+# --- 结束 --- 
 
 # --- OOS 验证日期 ---
 TRAIN_END_DATE = '2024-06-28' # 修正为 6 月底最后一个周五
@@ -75,28 +78,6 @@ MAX_WORKERS = os.cpu_count() - 1 if os.cpu_count() and os.cpu_count() > 1 else 1
 # K_FACTORS_RANGE = [2, 3, 4, 5, 6] 
 # HYPERPARAMS_TO_TUNE will be built dynamically in run_tuning
 HYPERPARAMS_TO_TUNE = [] 
-
-# --- 新增：对数同比转换函数 ---
-def apply_log_yoy_transform(data: pd.DataFrame | pd.Series, periods: int = 52, clip_value: float = 1e-9) -> pd.DataFrame | pd.Series:
-    """
-    计算数据的对数同比 log(y_t) - log(y_{t-periods})。
-    处理非正数，将其替换为小的正数 clip_value。
-    """
-    if data.empty:
-        return data
-
-    original_type = type(data)
-    if isinstance(data, pd.Series):
-        data = data.to_frame(name=data.name or 'value') # Convert Series to DataFrame
-
-    data_log = np.log(data.clip(lower=clip_value))
-    data_log_shifted = data_log.shift(periods)
-    log_yoy = data_log - data_log_shifted
-    
-    if original_type is pd.Series:
-        return log_yoy.iloc[:, 0] # Return Series if input was Series
-    else:
-        return log_yoy
 
 # --- 新增：基于 ADF 检验的变量级转换函数 ---
 def apply_stationarity_transforms(data: pd.DataFrame, target_variable: str, adf_p_threshold: float = 0.05) -> Tuple[pd.DataFrame, Dict[str, str]]:
@@ -218,22 +199,6 @@ def evaluate_dfm_params(
         current_data_transformed, transform_details = apply_stationarity_transforms(current_data, target_variable)
         # --- 结束修改 ---
 
-        # --- 原 LogYoY 逻辑 (注释掉) ---
-        # if USE_LOG_YOY_TRANSFORM and predictor_vars:
-        #     # print(f"    Applying log YoY transform (periods=52) to predictor variables...") # 注释掉
-        #     predictors_transformed = apply_log_yoy_transform(current_data[predictor_vars])
-        #     current_data = pd.concat([predictors_transformed, current_data[target_variable]], axis=1)
-        #     current_data = current_data[variables]
-        #     if not current_data.empty:
-        #         # print("    Removing 52 leading NaN rows due to LogYoY...") # 注释掉
-        #         if 52 >= len(current_data):
-        #               raise ValueError(f"最终运行数据准备错误: 数据行数 ({len(current_data)}) 不足以移除 LogYoY 的前导 NaN (52)")
-        #         current_data = current_data.iloc[52:]
-        #     if current_data.empty:
-        #         # print(f"    错误: Vars={len(variables)}, n_factors={k_factors} -> 对数同比转换后数据为空 (移除前导 NaN 后)") # 注释掉错误信息
-        #         return np.inf, np.inf, -np.inf, -np.inf, False
-        # --- 结束原 LogYoY 逻辑 ---
-
         # 使用转换后的数据进行后续处理
         current_data = current_data_transformed
         current_variables = current_data.columns.tolist() # 变量列表可能因全 NaN 列被移除而改变
@@ -305,8 +270,8 @@ def evaluate_dfm_params(
             n_iter=max_iter
         )
 
-        if not hasattr(dfm_results, 'x_sm') or dfm_results.x_sm is None or dfm_results.x_sm.empty or \
-           not hasattr(dfm_results, 'Lambda') or dfm_results.Lambda is None:
+        if (not hasattr(dfm_results, 'x_sm') or dfm_results.x_sm is None or dfm_results.x_sm.empty or 
+            not hasattr(dfm_results, 'Lambda') or dfm_results.Lambda is None):
             print(f"    错误: Vars={len(current_variables)}, n_factors={k_factors} -> DFM 结果不完整")
             return np.inf, np.inf, -np.inf, -np.inf, False
 
@@ -418,35 +383,45 @@ def evaluate_dfm_params(
         # traceback.print_exc() # 保持注释
         return np.inf, np.inf, -np.inf, -np.inf, False # 返回 RMSE=inf
 
+# --- 新增: 计算 Bai & Ng (2002) 信息准则 --- 
+# Function definition removed as requested.
+
 # --- 新增：重新创建 analyze_and_save_final_results 函数 --- 
 def analyze_and_save_final_results(
     run_output_dir: str, # 确保类型提示正确
     timestamp_str: str, # 确保类型提示正确
     excel_output_path: str, # <-- 新增: Excel 文件路径参数
-    all_data_full, 
-    data_for_analysis, 
+    all_data_full,
+    data_for_analysis,
     target_variable,
     final_dfm_results,
-    best_variables, 
-    best_params, 
-    var_type_map, 
-    best_avg_hit_rate_tuning: float, 
+    best_variables,
+    best_params,
+    var_type_map,
+    best_avg_hit_rate_tuning: float,
     best_avg_mae_tuning: float,    # Note: Name kept as mae, but value is RMSE
     total_runtime_seconds,
     factor_contributions=None,
     final_transform_log=None,
     pca_results_df=None, # <-- 新增: PCA 结果
-    contribution_results_df=None # <-- 新增: 因子贡献结果
+    contribution_results_df=None, # <-- 新增: 因子贡献结果
+    # k_icp1_recommended=None, # Removed IC parameter
+    # k_icp2_recommended=None,  # Removed IC parameter
+    # ic_details=None, # Removed IC parameter
+    var_industry_map=None # <-- 确认接收行业映射
 ):
     """分析最终DFM结果并保存到Excel和图中。"""
-    print("\n--- 开始最终结果分析与保存 ---")
+    print("\n--- [DEBUG] Entered analyze_and_save_final_results --- ") # DEBUG
     # --- 再次确认传递的参数 ---
-    print(f"  分析保存函数接收参数:")
-    print(f"    run_output_dir: {run_output_dir}")
-    print(f"    timestamp_str: {timestamp_str}")
-    print(f"    excel_output_path: {excel_output_path}")
-    print(f"    最终变量数: {len(best_variables)}")
-    print(f"    最终参数: {best_params}")
+    print(f"  [DEBUG] Received run_output_dir: {run_output_dir}") # DEBUG
+    print(f"  [DEBUG] Received excel_output_path: {excel_output_path}") # DEBUG
+    print(f"  [DEBUG] final_dfm_results type: {type(final_dfm_results)}") # DEBUG
+    print(f"  [DEBUG] data_for_analysis keys: {list(data_for_analysis.keys()) if data_for_analysis else 'None'}") # DEBUG
+    # print(f"    run_output_dir: {run_output_dir}")
+    # print(f"    timestamp_str: {timestamp_str}")
+    # print(f"    excel_output_path: {excel_output_path}")
+    # print(f"    最终变量数: {len(best_variables)}")
+    # print(f"    最终参数: {best_params}")
     # print(f"    最终转换日志: {final_transform_log}") # Optional: 可取消注释查看
     # --- 结束确认 ---
 
@@ -455,8 +430,9 @@ def analyze_and_save_final_results(
         print(f"错误：无效的 run_output_dir 参数: {run_output_dir}")
         return
     try:
+        print(f"  [DEBUG] Attempting to create directory: {run_output_dir}") # DEBUG
         os.makedirs(run_output_dir, exist_ok=True) # 必须在最前面创建目录
-        print(f"已确认/创建输出目录: {run_output_dir}")
+        print(f"  [DEBUG] Directory confirmed/created: {run_output_dir}")
     except OSError as e:
         print(f"错误：无法创建输出目录 '{run_output_dir}': {e}")
         return # 如果无法创建目录，则无法继续保存
@@ -467,6 +443,9 @@ def analyze_and_save_final_results(
     factor_plot_base_dir = run_output_dir # 因子图的基础目录
     heatmap_file = os.path.join(run_output_dir, f"factor_loadings_heatmap_{timestamp_str}.png")
     combined_factor_plot_file = os.path.join(run_output_dir, f"all_factors_timeseries_{timestamp_str}.png") # 新增：合并因子图路径
+    print(f"  [DEBUG] final_plot_file path: {final_plot_file}") # DEBUG
+    print(f"  [DEBUG] heatmap_file path: {heatmap_file}") # DEBUG
+    print(f"  [DEBUG] combined_factor_plot_file path: {combined_factor_plot_file}") # DEBUG
     # --- 结束动态路径生成 ---
 
     try:
@@ -488,13 +467,16 @@ def analyze_and_save_final_results(
         target_mean = data_for_analysis['final_target_mean_rescale']
         target_std = data_for_analysis['final_target_std_rescale']
         final_k_factors = best_params.get('k_factors', 'N/A')
-        use_log_yoy = USE_LOG_YOY_TRANSFORM 
+        # use_log_yoy = USE_LOG_YOY_TRANSFORM # 移除对已删除标志的引用
 
         if isinstance(final_k_factors, str):
             print("错误: best_params 中 k_factors 无效。")
             return
             
-        print(f"分析参数: k_factors={final_k_factors}, use_log_yoy(predictors)={use_log_yoy}")
+        # --- 移除 LogYoY 相关打印 ---
+        # print(f"分析参数: k_factors={final_k_factors}, use_log_yoy(predictors)={use_log_yoy}")
+        print(f"分析参数: k_factors={final_k_factors}")
+        # --- 结束移除 ---
 
         # --- 获取目标载荷 --- 
         lambda_df_final = None # 初始化
@@ -541,8 +523,8 @@ def analyze_and_save_final_results(
                 print(f"  最终 OOS RMSE (验证期): {final_oos_rmse:.6f}")
                 changes_df_val = validation_df_final.diff().dropna()
                 if not changes_df_val.empty and len(changes_df_val) > 0:
-                    correct_direction_val = (np.sign(changes_df_val['Nowcast']) == np.sign(changes_df_val['Target'])) & (changes_df_val['Target'] != 0)
-                    non_zero_target_changes_val = (changes_df_val['Target'] != 0).sum()
+                    correct_direction_val = (np.sign(changes_df_val['Nowcast']) == np.sign(changes_df_val['Target'])) & (changes_df_val['Target'] != 0) # Corrected column name
+                    non_zero_target_changes_val = (changes_df_val['Target'] != 0).sum() # Corrected column name
                     if non_zero_target_changes_val > 0:
                          hit_rate_validation = correct_direction_val.sum() / non_zero_target_changes_val * 100
                          print(f"  验证期 Hit Rate (%): {hit_rate_validation:.2f} (基于 {non_zero_target_changes_val} 个非零变化点)")
@@ -550,8 +532,8 @@ def analyze_and_save_final_results(
             if not train_df_final.empty and len(train_df_final) > 1:
                  changes_df_train = train_df_final.diff().dropna()
                  if not changes_df_train.empty and len(changes_df_train) > 0:
-                     correct_direction_train = (np.sign(changes_df_train['Nowcast']) == np.sign(changes_df_train['Target'])) & (changes_df_train['Target'] != 0)
-                     non_zero_target_changes_train = (changes_df_train['Target'] != 0).sum()
+                     correct_direction_train = (np.sign(changes_df_train['Nowcast']) == np.sign(changes_df_train['Target'])) & (changes_df_train['Target'] != 0) # Corrected column name
+                     non_zero_target_changes_train = (changes_df_train['Target'] != 0).sum() # Corrected column name
                      if non_zero_target_changes_train > 0:
                           hit_rate_train = correct_direction_train.sum() / non_zero_target_changes_train * 100
                           print(f"  训练期 Hit Rate (%): {hit_rate_train:.2f} (基于 {non_zero_target_changes_train} 个非零变化点)")
@@ -561,38 +543,70 @@ def analyze_and_save_final_results(
             f"最终分析总结 (Run: {timestamp_str}):\n" # Add timestamp to summary
             f"- 最终选择变量数: {len(best_variables)}\n"
             f"- 最佳调优参数: 因子数={final_k_factors}\n"
-            f"- 预测变量对数同比转换: {'启用' if use_log_yoy else '禁用'}\n"
+            # --- 修改: 移除 LogYoY 相关信息 ---
+            # f" - 预测变量对数同比转换: {'启用' if use_log_yoy else '禁用'}\n"
+            f" - 预测变量对数同比转换: 未使用\n"
+            # --- 结束修改 ---
             f"- 最佳平均胜率 (调优): {best_avg_hit_rate_tuning:.2f}%\n"
             f"- 对应平均 RMSE (调优): {best_avg_mae_tuning:.6f}\n"
             f"- 最终训练期 Hit Rate (%){diff_label_for_metrics}: {hit_rate_train:.2f}\n"
             f"- 最终验证期 RMSE{diff_label_for_metrics}: {final_oos_rmse:.6f}\n"
             f"- 最终验证期 Hit Rate (%){diff_label_for_metrics}: {hit_rate_validation:.2f}\n"
             f"- 总运行时间: {total_runtime_seconds / 60:.2f} 分钟\n"
+            # --- 新增: 添加 IC 推荐信息 --- 
+            # f"- Bai & Ng IC 推荐因子数: ICp1 -> {k_icp1_recommended if k_icp1_recommended is not None else 'N/A'}, ICp2 -> {k_icp2_recommended if k_icp2_recommended is not None else 'N/A'}\n" # Removed IC info
+            # --- 结束新增 ---
             f"\n注: \n"
-            f" - 对数同比转换 (Log(Yt) - Log(Yt-52)) {'仅应用于预测变量' if use_log_yoy else '已禁用'}。\n"
+            # --- 移除对 use_log_yoy 的引用 (直接删除相关行) --- 
+            f" - 对数同比转换未全局应用 (变量级转换基于 ADF 检验)。\n" # 更新注释
+            # --- 结束移除 ---
             f" - RMSE 和 Hit Rate 报告基于 {diff_label_for_metrics.strip()} 尺度。" 
         )
 
         # --- 写入 Excel 文件 --- 
-        print(f"将结果写入 Excel 文件: {excel_output_path}...")
+        print(f"\n[DEBUG] Starting Excel write process to: {excel_output_path}...") # DEBUG
         try:
             with pd.ExcelWriter(excel_output_path, engine='openpyxl') as writer:
                 # --- 修改: Sheet: Summary_Overview (合并 Analysis_Text, PCA, Contribution) ---
                 try:
-                    summary_df = pd.DataFrame({
-                        'Parameter': [
-                            'Final Variables Count', 'Best k_factors (Tuned)', 'Use LogYoY Transform (Predictors)',
-                            'Best Avg Hit Rate (Tuning %)', 'Corresponding Avg RMSE (Tuning)',
-                            f'Hit Rate (Train %){diff_label_for_metrics}', f"Final OOS RMSE{diff_label_for_metrics}",
-                            f'Hit Rate (Validation %){diff_label_for_metrics}', 'Total Runtime (s)'],
-                        'Value': [
-                            len(best_variables), final_k_factors, use_log_yoy,
-                            f"{best_avg_hit_rate_tuning:.2f}" if pd.notna(best_avg_hit_rate_tuning) else "N/A",
-                            f"{best_avg_mae_tuning:.6f}" if pd.notna(best_avg_mae_tuning) else "N/A",
-                            f"{hit_rate_train:.2f}" if pd.notna(hit_rate_train) else "N/A",
-                            f"{final_oos_rmse:.6f}" if pd.notna(final_oos_rmse) else "N/A",
-                            f"{hit_rate_validation:.2f}" if pd.notna(hit_rate_validation) else "N/A",
-                            f"{total_runtime_seconds:.2f}"]})
+                    summary_params = [
+                        'Final Variables Count', 'Best k_factors (Tuned)',
+                        'Best Avg Hit Rate (Tuning %)', 'Corresponding Avg RMSE (Tuning)',
+                        f'Hit Rate (Train %){diff_label_for_metrics}', f"Final OOS RMSE{diff_label_for_metrics}",
+                        f'Hit Rate (Validation %){diff_label_for_metrics}', 'Total Runtime (s)',
+                        # --- 新增: 添加 IC 参数行 --- 
+                        # 'Bai&Ng ICp1 Recommended k', 'Bai&Ng ICp2 Recommended k' # Removed IC params
+                        # --- 结束新增 ---
+                    ]
+                    summary_values = [
+                        len(best_variables), final_k_factors,
+                        f"{best_avg_hit_rate_tuning:.2f}" if pd.notna(best_avg_hit_rate_tuning) else "N/A",
+                        f"{best_avg_mae_tuning:.6f}" if pd.notna(best_avg_mae_tuning) else "N/A",
+                        f"{hit_rate_train:.2f}" if pd.notna(hit_rate_train) else "N/A",
+                        f"{final_oos_rmse:.6f}" if pd.notna(final_oos_rmse) else "N/A",
+                        f"{hit_rate_validation:.2f}" if pd.notna(hit_rate_validation) else "N/A",
+                        f"{total_runtime_seconds:.2f}",
+                        # --- 新增: 添加 IC 值 --- 
+                        # str(k_icp1_recommended) if k_icp1_recommended is not None else "N/A", # Removed IC value
+                        # str(k_icp2_recommended) if k_icp2_recommended is not None else "N/A" # Removed IC value
+                        # --- 结束新增 ---
+                    ]
+                    summary_df = pd.DataFrame({'Parameter': summary_params, 'Value': summary_values})
+                    # summary_df = pd.DataFrame({
+                    #     'Parameter': [
+                    #         'Final Variables Count', 'Best k_factors (Tuned)', 
+                    #         # 'Use LogYoY Transform (Predictors)', # 移除
+                    #         'Best Avg Hit Rate (Tuning %)', 'Corresponding Avg RMSE (Tuning)',
+                    #         f'Hit Rate (Train %){diff_label_for_metrics}', f"Final OOS RMSE{diff_label_for_metrics}",
+                    #         f'Hit Rate (Validation %){diff_label_for_metrics}', 'Total Runtime (s)'],
+                    #     'Value': [
+                    #         len(best_variables), final_k_factors,
+                    #         f"{best_avg_hit_rate_tuning:.2f}" if pd.notna(best_avg_hit_rate_tuning) else "N/A",
+                    #         f"{best_avg_mae_tuning:.6f}" if pd.notna(best_avg_mae_tuning) else "N/A",
+                    #         f"{hit_rate_train:.2f}" if pd.notna(hit_rate_train) else "N/A",
+                    #         f"{final_oos_rmse:.6f}" if pd.notna(final_oos_rmse) else "N/A",
+                    #         f"{hit_rate_validation:.2f}" if pd.notna(hit_rate_validation) else "N/A",
+                    #         f"{total_runtime_seconds:.2f}"]})
                     summary_df['Value'] = summary_df['Value'].astype(str)
                     summary_df.to_excel(writer, sheet_name='Summary_Overview', index=False)
                     current_row = writer.sheets['Summary_Overview'].max_row
@@ -883,14 +897,17 @@ def analyze_and_save_final_results(
                     data_to_save_orig.to_excel(writer, sheet_name='Full_Aligned_Data_Orig', index=False)
                 except Exception as e: print(f"写入 Full_Aligned_Data_Orig 时出错: {e}")
 
-            print(f"Excel 文件基础部分写入完成。") # 增加日志
+            print(f"[DEBUG] Excel file base write completed.") # DEBUG
         except Exception as e_writer:
+            print(f"[DEBUG] ERROR during ExcelWriter setup or saving: {e_writer}") # DEBUG
             print(f"创建或写入 Excel 文件 '{excel_output_path}' 时发生严重错误: {e_writer}")
         # --- 结束写入 Excel 文件 --- 
 
         # --- 生成 Nowcast 对比图 --- 
+        print(f"\n[DEBUG] Checking conditions for final nowcast plot...") # DEBUG
         if 'target_for_comparison' in locals() and not target_for_comparison.empty:
-            print(f"调用 plot_final_nowcast, 保存到: {final_plot_file}") # 确认传入 plot_final_nowcast 的路径正确
+            print(f"  [DEBUG] Conditions met. Calling plot_final_nowcast, save to: {final_plot_file}") # DEBUG
+            # print(f"调用 plot_final_nowcast, 保存到: {final_plot_file}") # 确认传入 plot_final_nowcast 的路径正确
             plot_final_nowcast(
                 final_nowcast_series=final_nowcast_orig, 
                 target_for_plot=target_for_comparison, 
@@ -898,59 +915,117 @@ def analyze_and_save_final_results(
                 validation_end=VALIDATION_END_DATE, 
                 title=f'最终 DFM Nowcast vs 观测值 ({diff_label_for_metrics.strip(" ()")}) [Run: {timestamp_str}]', 
                 filename=final_plot_file, # 确认传递的是基于 run_output_dir 的路径
-                use_log_yoy=use_log_yoy 
+                # use_log_yoy=use_log_yoy # 移除参数
             )
         else:
+            print("[DEBUG] Conditions NOT met for final nowcast plot.") # DEBUG
             print("警告: 无法生成最终绘图，因为用于比较的目标序列为空或未定义。")
         # --- 结束生成 Nowcast 图 --- 
 
-        # --- 生成因子载荷热力图 ---
-        print("\n生成因子载荷热力图...")
-        if lambda_df_final is not None and not lambda_df_final.empty:
+        # --- 生成因子载荷热力图 (修改1: 排序) --- 
+        print("\n[DEBUG] Checking conditions for heatmap with industry sorting...") # DEBUG
+        lambda_df_for_heatmap = None # 初始化变量
+        lambda_df_sorted = None # 初始化排序后的 df
+        if lambda_df_final is not None and not lambda_df_final.empty and var_industry_map is not None:
             try:
-                # <-- 新增：准备带有贡献度的因子标签 -->
+                # 复制一份用于排序和绘图
+                lambda_df_sorted_temp = lambda_df_final.copy()
+
+                # 添加行业列
+                default_industry = '未知行业'
+                lambda_df_sorted_temp['行业'] = lambda_df_sorted_temp.index.map(
+                    lambda var_name: var_industry_map.get(
+                        unicodedata.normalize('NFKC', str(var_name)).strip().lower(), default_industry
+                    )
+                )
+
+                # 按照行业和变量名排序
+                index_name = lambda_df_sorted_temp.index.name if lambda_df_sorted_temp.index.name else 'index'
+                if index_name == '行业': # Avoid conflict if index is already named '行业'
+                     lambda_df_sorted_temp = lambda_df_sorted_temp.reset_index()
+                     index_name = 'Original_Index' # Choose a temporary name
+                     lambda_df_sorted_temp = lambda_df_sorted_temp.rename(columns={'index':index_name}).set_index(index_name)
+                     
+                lambda_df_sorted = lambda_df_sorted_temp.sort_values(by=['行业', index_name])
+
+                # 准备用于绘图的数据（移除行业列）
+                lambda_df_for_heatmap = lambda_df_sorted.drop(columns=['行业'])
+                print("  [DEBUG] Loadings sorted by industry for heatmap.")
+
+            except Exception as e_sort:
+                 print(f"  [DEBUG] ERROR during heatmap data sorting: {e_sort}")
+                 lambda_df_for_heatmap = lambda_df_final # 如果排序失败，回退到原始顺序
+                 lambda_df_sorted = None # 排序失败，重置
+        elif lambda_df_final is not None and not lambda_df_final.empty:
+            lambda_df_for_heatmap = lambda_df_final # 如果没有行业信息，使用原始顺序
+            lambda_df_sorted = None # 无排序
+            print("  [DEBUG] Industry map not available, using original order for heatmap.")
+        else:
+            print("  [DEBUG] lambda_df_final is None or empty, cannot generate heatmap data.")
+        
+        # 继续使用 lambda_df_for_heatmap 绘制热力图 (后续步骤)
+        if lambda_df_for_heatmap is not None:
+            try:
+                # 准备带贡献度的因子标签
                 factor_labels_with_contrib = []
                 if factor_contributions:
-                    for factor_name in lambda_df_final.columns:
+                    for factor_name in lambda_df_for_heatmap.columns:
                         contrib = factor_contributions.get(factor_name, None)
                         if contrib is not None:
-                            factor_labels_with_contrib.append(f"{factor_name}\n({contrib:.1f}%)") # 格式化标签
+                            factor_labels_with_contrib.append(f"{factor_name}\n({contrib:.1f}%)")
                         else:
-                            factor_labels_with_contrib.append(factor_name) # 如果没有贡献度信息，只用名字
+                            factor_labels_with_contrib.append(factor_name)
                 else:
-                    factor_labels_with_contrib = lambda_df_final.columns.tolist()
-                # <-- 结束新增 -->
-
-                plt.figure(figsize=(max(10, lambda_df_final.shape[1] * 1.5), # 调整宽度以适应更长的标签
-                                   max(12, lambda_df_final.shape[0] * 0.3)))
-                sns.heatmap(lambda_df_final, 
+                    factor_labels_with_contrib = lambda_df_for_heatmap.columns.tolist()
+                
+                # 简化 figsize 计算
+                heatmap_width = max(10, lambda_df_for_heatmap.shape[1] * 1.5)
+                heatmap_height = max(12, lambda_df_for_heatmap.shape[0] * 0.3)
+                fig, ax = plt.subplots(figsize=(heatmap_width, heatmap_height))
+                
+                # 简化 heatmap 调用 (移除 ax=ax, 它会被自动使用)
+                sns.heatmap(lambda_df_for_heatmap, 
                             annot=True,
                             fmt=".2f",
                             cmap='RdBu_r',
                             center=0,
                             linewidths=.5,
-                            linecolor='lightgray',
-                            xticklabels=factor_labels_with_contrib, # <-- 修改：使用带贡献度的标签
+                            linecolor='lightgray', 
+                            xticklabels=factor_labels_with_contrib, 
+                            yticklabels=lambda_df_for_heatmap.index,
                             cbar_kws={'shrink': .5})
-                plt.title(f'因子载荷热力图 (Factor Loadings) [Run: {timestamp_str}]\n(X轴标签显示因子对目标变量总方差贡献率近似值)', fontsize=14) # 修改标题解释
-                plt.xlabel('因子及其贡献度 (%)', fontsize=12) # 修改X轴标签
-                plt.ylabel('变量 (Variables)', fontsize=12)
-                plt.xticks(rotation=0, ha='center') # 修改旋转角度为0，居中对齐
-                plt.yticks(rotation=0)
-                plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # 调整布局以防标签重叠
-                print(f"保存因子载荷热力图到: {heatmap_file}")
-                plt.savefig(heatmap_file)
-                plt.close()
-                print(f"  因子载荷热力图已保存到: {heatmap_file}")
+                
+                ax.set_title(f'因子载荷热力图 [Run: {timestamp_str}]') # Removed trailing backslash
+                ax.set_xlabel('因子及其贡献度 (%)')
+                ax.set_ylabel('变量') 
+                ax.tick_params(axis='x', rotation=0)
+                ax.tick_params(axis='y', rotation=0)
+                
+                # --- 行业标签添加部分将在下一步加入 ---
+
+                plt.tight_layout() # 调整布局
+                print(f"  [DEBUG] Saving heatmap (potentially sorted) to: {heatmap_file}")
+                plt.savefig(heatmap_file, bbox_inches='tight')
+                plt.close(fig) # 关闭特定的 figure
+                print(f"  [DEBUG] Heatmap saved successfully.")
             except Exception as e_heatmap:
-                print(f"  生成或保存因子载荷热力图时出错: {e_heatmap}")
-                plt.close()
+                print(f"  [DEBUG] ERROR generating/saving heatmap: {e_heatmap}")
+                print(f"  生成或保存热力图时出错: {e_heatmap}")
+                # 尝试关闭可能未关闭的图形
+                try:
+                    plt.close(fig)
+                except NameError:
+                    pass # fig 可能未定义
+                except Exception:
+                    pass # 其他关闭错误
+            # --- End Fix ---
         else:
-            print("警告: 无法生成因子载荷热力图，因为最终载荷矩阵 (lambda_df_final) 不可用或为空。")
-        # --- 结束生成热力图 ---
-            
+            print("[DEBUG] Conditions NOT met for heatmap (lambda_df_for_heatmap is None).")
+            print("警告: 无法生成因子载荷热力图，因为最终载荷矩阵不可用。")
+        # --- 结束生成热力图 --- 
+
         # --- 修改: 生成并保存所有因子合并的时间序列图 --- 
-        print("\n生成合并的因子时间序列图...")
+        print("\n[DEBUG] Checking conditions for combined factors plot...") # DEBUG
         if final_factors is not None and not final_factors.empty:
             plt.figure(figsize=(14, 8)) # 创建一个图
             for factor_col in final_factors.columns:
@@ -962,28 +1037,35 @@ def analyze_and_save_final_results(
             plt.legend(loc='best') # 添加图例
             plt.grid(True, linestyle='--', alpha=0.6)
             plt.tight_layout()
-            
+
             try:
-                print(f"[DEBUG] Saving combined factors plot to: '{combined_factor_plot_file}'") # 调试打印
+                print(f"  [DEBUG] Saving combined factors plot to: '{combined_factor_plot_file}'") # 调试打印
+                # print(f"[DEBUG] Saving combined factors plot to: '{combined_factor_plot_file}'") # 调试打印
                 plt.savefig(combined_factor_plot_file) # 保存合并后的图
                 plt.close() # 关闭图形
-                print(f"  合并的因子时间序列图已保存到: {combined_factor_plot_file}")
+                print(f"  [DEBUG] Combined factors plot saved successfully.") # DEBUG
+                # print(f"  合并的因子时间序列图已保存到: {combined_factor_plot_file}")
             except Exception as e_plot_combined_factors:
+                print(f"  [DEBUG] ERROR saving combined factors plot: {e_plot_combined_factors}") # DEBUG
                 print(f"  保存合并的因子时间序列图时出错: {e_plot_combined_factors}")
                 plt.close() # 确保关闭图形
         else:
+            print("[DEBUG] Conditions NOT met for combined factors plot (final_factors is None or empty).") # DEBUG
             print("警告: 最终因子 (final_factors) 为空或 None，无法生成合并的因子时间序列图。")
         # --- 结束修改因子图 --- 
 
-        print("分析和保存完成。")
+        print("[DEBUG] analyze_and_save_final_results function finished.") # DEBUG
 
     except Exception as e_analyze:
+        print(f"[DEBUG] UNEXPECTED ERROR in analyze_and_save_final_results: {e_analyze}") # DEBUG
         print(f"在 analyze_and_save_final_results 函数中发生意外错误: {e_analyze}")
         import traceback
         traceback.print_exc()
+    # --- Fix: Add finally block if necessary, or handle exceptions within inner try blocks ---
+    # If the main try was just for overall error catching, the inner try blocks should handle their specific errors.
 
 # --- 修改绘图函数以绘制完整 Nowcast --- 
-def plot_final_nowcast(final_nowcast_series, target_for_plot, validation_start, validation_end, title, filename, use_log_yoy):
+def plot_final_nowcast(final_nowcast_series, target_for_plot, validation_start, validation_end, title, filename):
     print("\n生成最终 Nowcasting 图 (原始水平 - 绘制完整预测)...") # 更新日志
     try:
         # 不再基于 common_index_plot 过滤，但需要目标序列的索引用于屏蔽
@@ -1064,12 +1146,20 @@ def run_tuning():
     script_start_time = time.time()
     total_evaluations = 0
     svd_error_count = 0
-    transform_info = "启用" if USE_LOG_YOY_TRANSFORM else "禁用"
+    # 移除对已删除标志的引用
     
     # --- 新增: 生成时间戳和运行目录 ---
     timestamp_str = time.strftime("%Y%m%d_%H%M%S")
-    base_output_dir = os.path.join('dym_estimate', 'dfm_result') # 基础输出目录
-    run_output_dir = os.path.join(base_output_dir, f'run_{timestamp_str}') # 带时间戳的运行目录
+
+    # 获取脚本所在的目录 (假设 tune_dfm.py 在 dym_estimate 文件夹下)
+    script_dir = os.path.dirname(os.path.abspath(__file__)) # This gets the directory containing tune_dfm.py
+
+    # 基础输出目录应该是脚本目录下的 'dfm_result' 子目录
+    base_output_dir = os.path.join(script_dir, 'dfm_result')
+
+    # 运行目录仍然是 base_output_dir 下的 run_{timestamp}
+    run_output_dir = os.path.join(base_output_dir, f'run_{timestamp_str}')
+
     log_filename = f"调优日志_{timestamp_str}.txt" # 带时间戳的日志文件名
     log_file_path = os.path.join(run_output_dir, log_filename) # 日志文件的完整路径
     # --- 结束新增 ---
@@ -1078,7 +1168,8 @@ def run_tuning():
     excel_output_file = os.path.join(run_output_dir, f"result_{timestamp_str}.xlsx")
     # --- 结束新增 ---
 
-    print(f"--- 开始变量后向剔除与超参数调优 (优化目标: 平均胜率优先, RMSE其次; k_factors 动态范围, 对数同比转换: {transform_info}) ---")
+    print(f"--- 开始变量后向剔除与超参数调优 (优化目标: 平均胜率优先, k_factors其次; 因子数范围动态确定) ---")
+    # print(f"--- 开始变量后向剔除与超参数调优 (优化目标: 平均胜率优先, RMSE其次; k_factors 动态范围, 对数同比转换: {transform_info}) ---") # 旧打印
     print(f"本次运行结果将保存在: {run_output_dir}") # 打印本次运行目录
     
     try:
@@ -1087,7 +1178,9 @@ def run_tuning():
         log_file = open(log_file_path, 'w', encoding='utf-8') # 使用完整路径打开日志
         log_file.write(f"--- 开始详细调优日志 (Run: {timestamp_str}) ---\n")
         log_file.write(f"输出目录: {run_output_dir}\n")
-        log_file.write(f"配置: 对数同比转换={transform_info}; 优化目标=平均胜率优先, RMSE其次\n")
+        # --- 修改: 更新日志，移除 LogYoY 相关描述 ---
+        log_file.write(f"配置: 优化目标=平均胜率优先, k_factors其次\n")
+        # log_file.write(f"配置: 对数同比转换={transform_info}; 优化目标=平均胜率优先, RMSE其次\n") # 旧日志
         # --- 结束修改 ---
         print(f"详细调优日志将写入: {log_file_path}")
     except IOError as e:
@@ -1172,6 +1265,31 @@ def run_tuning():
     print("-"*30)
 
     print(f"成功创建 {len(var_type_map)} 个指标的类型映射。")
+
+    # --- 新增: 加载 var_industry_map ---
+    print("尝试从 Excel 文件加载指标行业映射 (预期在第一个 Sheet)...")
+    var_industry_map = {} # 初始化为空字典
+    col_industry_name = '行业' # 假设行业列名为 '行业'
+
+    if col_industry_name in indicator_sheet.columns:
+        try:
+            # 清理列名
+            col_industry_name = col_industry_name.strip()
+            # 创建映射，键进行规范化和小写处理，处理 NaN
+            industry_map_temp = pd.Series(
+                indicator_sheet[col_industry_name].astype(str).str.strip().values,
+                index=indicator_sheet[col_indicator_name].astype(str).str.strip() # 使用与 var_type_map 相同的键
+            ).to_dict()
+
+            var_industry_map = {unicodedata.normalize('NFKC', str(k)).strip().lower(): str(v).strip()
+                               for k, v in industry_map_temp.items()
+                               if pd.notna(k) and str(k).lower() != 'nan' and pd.notna(v) and str(v).lower() != 'nan'}
+            print(f"  成功创建 {len(var_industry_map)} 个指标的行业映射。")
+        except Exception as e_ind_map:
+            print(f"  警告: 加载指标行业映射时出错: {e_ind_map}。将使用空映射。")
+    else:
+        print(f"  警告: 在 Excel 文件 '{EXCEL_DATA_FILE}' 的第一个 sheet 中未找到行业列 '{col_industry_name}'。热力图将无法按行业排序。")
+    # --- 结束新增 ---
 
     # --- 新增: 计算原始目标变量的稳定均值和标准差 ---
     original_target_series_for_stats = all_data_aligned_weekly[TARGET_VARIABLE].copy().dropna()
@@ -1289,39 +1407,33 @@ def run_tuning():
     K_FACTORS_RANGE = list(range(1, max_k_factors + 1))
     print(f"动态确定的因子数范围 (基于初始块数 {max_k_factors}): {K_FACTORS_RANGE}")
 
-    # --- 临时修改：仅测试第一个因子数以加速 --- 
-    K_FACTORS_RANGE_TEST = K_FACTORS_RANGE[:1] # 只取第一个因子数
-    print(f"*** 快速测试：临时限制因子数范围为: {K_FACTORS_RANGE_TEST} ***")
-    # --- 结束临时修改 ---
+    # --- 测试模式: 限制因子数范围 ---
+    if TEST_MODE:
+        K_FACTORS_RANGE_TEST = K_FACTORS_RANGE[:2] # 最多取前两个因子数
+        print(f"*** 测试模式：限制因子数范围为: {K_FACTORS_RANGE_TEST} ***")
+        k_factors_for_tuning = K_FACTORS_RANGE_TEST
+    else:
+        k_factors_for_tuning = K_FACTORS_RANGE
+    # --- 结束测试模式限制 ---
 
-    HYPERPARAMS_TO_TUNE = [] 
-    # --- 临时修改：使用 K_FACTORS_RANGE_TEST ---
-    # for k in K_FACTORS_RANGE: # 原代码
-    for k in K_FACTORS_RANGE_TEST: # 修改后：使用限制后的范围
-    # --- 结束临时修改 ---
+    HYPERPARAMS_TO_TUNE = []
+    for k in k_factors_for_tuning:
         HYPERPARAMS_TO_TUNE.append({'k_factors': k})
     print(f"构建了 {len(HYPERPARAMS_TO_TUNE)} 个超参数组合进行测试 (仅调整 k_factors)。")
 
     print(f"\n训练期结束: {TRAIN_END_DATE}")
     print(f"验证期: {VALIDATION_START_DATE} to {VALIDATION_END_DATE}")
-    print(f"待优化的因子数范围 (动态确定): {K_FACTORS_RANGE}") 
-    # --- 恢复打印的优化目标描述 ---
-    print(f"优化目标: 最大化 (IS_HitRate + OOS_HitRate) / 2 (平均胜率优先), 然后最小化 (IS_RMSE + OOS_RMSE) / 2 (平均RMSE其次)") # 新描述
-    # print(f"优化目标: 最小化 (IS_RMSE + OOS_RMSE) / 2 (平均RMSE优先), 然后最大化 OOS_HitRate (OOS胜率其次)") # 旧描述
-    # --- 结束恢复 ---
+    print(f"待优化的因子数范围 (动态确定): {k_factors_for_tuning}") # 使用限制后的范围
+    print(f"优化目标: 最大化 (IS_HitRate + OOS_HitRate) / 2 (平均胜率优先), 然后最小化 (IS_RMSE + OOS_RMSE) / 2 (平均RMSE其次)")
     print(f"将使用最多 {MAX_WORKERS} 个进程进行并行计算。")
+    print(f"优化目标: 1. 最大化平均胜率; 2. 最小化因子数; 3. 最小化平均 RMSE")
+    print(f"使用的迭代次数: {n_iter_to_use}") # 打印使用的迭代次数
     print("-" * 30)
 
     print("\n--- 初始化: 评估所有预测变量 ---")
-    # initial_predictors = [v for v in all_data_aligned_weekly.columns if v != TARGET_VARIABLE]
-    # initial_variables = initial_predictors + [TARGET_VARIABLE]
-    # --- 恢复: 初始化跟踪变量为胜率优先 ---
-    best_overall_hit_rate = -np.inf
-    best_overall_mae = np.inf 
-    # best_overall_oos_hit_rate = -np.inf # 不再单独跟踪 OOS HR
-    # --- 结束恢复 ---
+    best_overall_score_tuple = (-np.inf, np.inf, np.inf)
     best_overall_params = None
-    best_overall_variables = initial_variables.copy() # <-- 修改：初始化最佳变量为筛选后的 initial_variables
+    best_overall_variables = initial_variables.copy()
     initial_best_found = False
 
     futures_initial_map = {}
@@ -1337,9 +1449,9 @@ def run_tuning():
                                      VALIDATION_END_DATE,
                                      TARGET_FREQ,
                                      TRAIN_END_DATE,
-                                     target_mean_original=target_mean_original, # 确保此行存在且正确
-                                     target_std_original=target_std_original,  # 确保此行存在且正确
-                                     max_iter=N_ITER_FIXED
+                                     target_mean_original=target_mean_original,
+                                     target_std_original=target_std_original,
+                                     max_iter=n_iter_to_use # 使用 n_iter_to_use
                                  )
             futures_initial_map[future] = params
 
@@ -1370,17 +1482,29 @@ def run_tuning():
                             'combined_rmse': combined_rmse, 'combined_hit_rate': combined_hit_rate,
                             'is_rmse': is_rmse, 'oos_rmse': oos_rmse, 'is_hit_rate': is_hit_rate, 'oos_hit_rate': oos_hit_rate})
 
-            if np.isfinite(combined_hit_rate) and np.isfinite(combined_rmse):
-                current_score_tuple = (combined_hit_rate, -combined_rmse) # 胜率优先
-                best_score_tuple = (best_overall_hit_rate, -best_overall_mae)
+            if np.isfinite(combined_hit_rate) and np.isfinite(combined_rmse) and 'k_factors' in params:
+                current_k_factors = params['k_factors']
+                if np.isfinite(current_k_factors):
+                     current_score_tuple = (combined_hit_rate, -current_k_factors, -combined_rmse)
 
-                if current_score_tuple > best_score_tuple:
-                    best_overall_hit_rate = combined_hit_rate
-                    best_overall_mae = combined_rmse
-                    best_overall_params = params
-                    best_overall_variables = initial_variables.copy() # <-- 修改: 确保使用当前的 initial_variables
-                    initial_best_found = True 
-            # --- 结束修改 ---
+                     # 使用元组比较直接确定是否更新
+                     if current_score_tuple > best_overall_score_tuple:
+                         best_overall_score_tuple = current_score_tuple
+                         best_overall_params = params
+                         best_overall_variables = initial_variables.copy() # 确保使用当前的 initial_variables
+                         initial_best_found = True
+
+            # if np.isfinite(combined_hit_rate) and np.isfinite(combined_rmse):
+            #     current_score_tuple = (combined_hit_rate, -combined_rmse) # 胜率优先
+            #     best_score_tuple = (best_overall_hit_rate, -best_overall_mae)
+            #
+            #     if current_score_tuple > best_score_tuple:
+            #         best_overall_hit_rate = combined_hit_rate
+            #         best_overall_mae = combined_rmse
+            #         best_overall_params = params
+            #         best_overall_variables = initial_variables.copy() # <-- 修改: 确保使用当前的 initial_variables
+            #         initial_best_found = True 
+            # --- 结束修改 (初始化评估) ---
 
         except Exception as e:
             print(f"初始化评估期间参数 {params} 运行出错: {e}")
@@ -1389,8 +1513,9 @@ def run_tuning():
         print("错误: 初始化评估未能成功运行任何超参数组合。无法继续。")
         sys.exit(1)
 
-    # --- 修改: 更新初始结果打印 --- 
-    print(f"初始评估完成。最佳组合得分: 平均胜率={best_overall_hit_rate:.2f}%, 平均 RMSE={best_overall_mae:.6f} (参数: {best_overall_params})")
+    # --- 修改: 更新初始结果打印 (反映新逻辑) --- 
+    best_init_hr, best_init_neg_k, best_init_neg_rmse = best_overall_score_tuple
+    print(f"初始评估完成。最佳组合得分: 平均胜率={best_init_hr:.2f}%, 因子数={-best_init_neg_k}, 平均 RMSE={-best_init_neg_rmse:.6f} (参数: {best_overall_params})")
     print(f"初始变量数量: {len(best_overall_variables)}") # 使用 best_overall_variables
     if log_file:
          try:
@@ -1398,8 +1523,7 @@ def run_tuning():
              log_file.write("--- 初始化: 所有变量评估结果 ---\n")
              log_file.write(f"初始变量组 ({len(best_overall_variables)}): {best_overall_variables}\n")
              log_file.write(f"最佳参数: {best_overall_params}\n")
-             log_file.write(f"最佳平均胜率 (IS+OOS)/2: {best_overall_hit_rate:.2f}%\n") # 胜率优先
-             log_file.write(f"对应的平均 RMSE (IS+OOS)/2: {best_overall_mae:.6f}\n")
+             log_file.write(f"最佳得分 (HR, -K, -RMSE): {best_overall_score_tuple[0]:.2f}, {best_overall_score_tuple[1]}, {best_overall_score_tuple[2]:.6f}\n")
              log_file.write("-"*35 + "\n")
          except Exception as log_e:
              print(f"写入初始评估日志时出错: {log_e}")
@@ -1411,16 +1535,24 @@ def run_tuning():
     for block_name, block_vars in blocks.items():
         print(f"  块 '{block_name}' ({len(block_vars)} 变量)")
 
-    # --- 修改: 初始化当前最佳指标为胜率优先 --- 
+    # --- 修改: 初始化当前最佳指标为新的三层优化目标 --- 
     current_best_variables = best_overall_variables.copy()
-    current_best_hit_rate = best_overall_hit_rate # 恢复
-    current_best_mae = best_overall_mae
-    # current_best_oos_hit_rate = best_overall_oos_hit_rate # 移除
+    current_best_score_tuple = best_overall_score_tuple
     current_best_params = best_overall_params
+    # current_best_hit_rate = best_overall_hit_rate # 移除
+    # current_best_mae = best_overall_mae          # 移除
+    # current_best_params = best_overall_params     # 移除
     # --- 结束修改 ---
 
     for block_name, block_vars_list in tqdm(blocks.items(), desc="处理变量块", unit="block"):
         print(f"\n--- 处理块: '{block_name}' (初始 {len(block_vars_list)} 变量) ---")
+
+        # --- 快速测试: 只处理第一个块 (逻辑移除) ---
+        # is_first_block = (block_name == list(blocks.keys())[0]) 
+        # if not is_first_block:                                 
+        #      print(f"  [快速测试] 跳过块 '{block_name}'")        
+        #      continue                                          
+        # --- 结束快速测试 (逻辑移除) ---
 
         if len(block_vars_list) <= 2: 
             print(f"块 '{block_name}' 变量数 ({len(block_vars_list)}) <= 2，跳过剔除。")
@@ -1428,12 +1560,12 @@ def run_tuning():
 
         block_stable = False
         while not block_stable:
-            # --- 修改: 初始化本轮最佳为胜率优先 ---
-            best_score_tuple_this_iter = (-np.inf, -np.inf) # (hit_rate, -mae)
-            # best_mae_this_iteration = np.inf # 移除
-            # best_oos_hit_rate_this_iteration = -np.inf # 移除
-            variable_to_remove = None
-            params_for_best_removal = None
+            # --- 修改: 初始化本轮最佳为新的三层优化目标 --- 
+            # best_score_tuple_this_iter = (-np.inf, -np.inf) # 旧 (hit_rate, -mae)
+            best_candidate_score_tuple_this_iter = (-np.inf, np.inf, np.inf) # (hit_rate, -k, -rmse)
+            best_removal_candidate_this_iter = None
+            # variable_to_remove = None # 移除
+            # params_for_best_removal = None # 移除
             # --- 结束修改 ---
 
             eligible_vars_in_block = [v for v in block_vars_list if v in current_best_variables and v != TARGET_VARIABLE]
@@ -1461,7 +1593,7 @@ def run_tuning():
                             validation_end=VALIDATION_END_DATE,
                             target_freq=TARGET_FREQ,
                             train_end_date=TRAIN_END_DATE, 
-                            max_iter=N_ITER_FIXED,
+                            max_iter=n_iter_to_use, # 使用 n_iter_to_use
                             target_mean_original=target_mean_original, # <-- 传递稳定值
                             target_std_original=target_std_original,  # <-- 传递稳定值
                         )
@@ -1504,75 +1636,115 @@ def run_tuning():
                 except Exception as exc:
                     print(f"处理块 {block_name}, 尝试移除 {context['removed_var']} 时出错: {exc}")
 
-            # --- 修改: 选择最佳移除操作 (胜率优先) ---
-            best_removal_candidate = None
-            # best_removal_score = (-np.inf, -np.inf) # 使用 best_score_tuple_this_iter
+            # --- 修改: 选择最佳移除操作 (使用新的三层优化目标) ---
+            # best_removal_candidate = None # 移除
+            # best_candidate_score_tuple = (-np.inf, np.inf) # 旧 (hit_rate, -k_factors)
 
             for result in results_this_iteration:
-                if np.isfinite(result['combined_hit_rate']) and np.isfinite(result['combined_rmse']):
-                    current_removal_score_tuple = (result['combined_hit_rate'], -result['combined_rmse'])
-                    if current_removal_score_tuple > best_score_tuple_this_iter:
-                        best_score_tuple_this_iter = current_removal_score_tuple
-                        best_removal_candidate = result
+                if np.isfinite(result['combined_hit_rate']) and np.isfinite(result['combined_rmse']) and 'k_factors' in result['params']:
+                    current_k = result['params']['k_factors']
+                    if np.isfinite(current_k):
+                        # 使用 (hit_rate, -k_factors, -rmse) 进行比较
+                        score_tuple_for_result = (result['combined_hit_rate'], -current_k, -result['combined_rmse'])
+                        if score_tuple_for_result > best_candidate_score_tuple_this_iter:
+                            best_candidate_score_tuple_this_iter = score_tuple_for_result
+                            best_removal_candidate_this_iter = result
+
             # --- 结束修改 ---
 
-            # --- 修改: 接受移除的条件 (胜率优先) ---
-            # if best_removal_candidate and (best_mae_this_iteration < current_best_mae or (np.isclose(best_mae_this_iteration, current_best_mae) and best_oos_hit_rate_this_iteration > current_best_oos_hit_rate)):
-            if best_removal_candidate and best_score_tuple_this_iter > (current_best_hit_rate, -current_best_mae):
+            # --- 修改: 接受移除的条件 (基于新的三层优化逻辑) ---
+            accept_removal = False
+            reason_for_update = ""
+            if best_removal_candidate_this_iter:
+                 # 只有当本轮找到的最佳分数严格优于当前全局最佳分数时，才接受移除
+                 if best_candidate_score_tuple_this_iter > current_best_score_tuple:
+                      accept_removal = True
+                      # 构造更新原因的描述
+                      old_hr, old_neg_k, old_neg_rmse = current_best_score_tuple
+                      new_hr, new_neg_k, new_neg_rmse = best_candidate_score_tuple_this_iter
+                      reason_for_update = f"找到更优解: HR={new_hr:.2f}%(>{old_hr:.2f}%), K={-new_neg_k}(vs {-old_neg_k}), RMSE={-new_neg_rmse:.6f}(vs {-old_neg_rmse:.6f})"
+
+            # if best_removal_candidate:
+            #     candidate_hit_rate = best_candidate_score_tuple[0]
+            #     candidate_k_factors = -best_candidate_score_tuple[1] # 转回正数
+            #     candidate_rmse = best_removal_candidate['combined_rmse'] # 获取对应的 RMSE
+            #     benchmark_hit_rate = current_best_hit_rate
+            #     benchmark_k_factors = current_best_params['k_factors']
+            #     improvement_threshold = 1.0 # 胜率提升阈值
+            #
+            #     # 检查是否满足更新条件
+            #     if np.isfinite(candidate_hit_rate) and np.isfinite(benchmark_hit_rate):
+            #         if candidate_hit_rate >= benchmark_hit_rate + improvement_threshold:
+            #             accept_removal = True
+            #             reason_for_update = f"胜率提升 >= {improvement_threshold:.1f}%"
+            #         elif (candidate_hit_rate > benchmark_hit_rate - improvement_threshold) and \
+            #              (candidate_k_factors < benchmark_k_factors):
+            #             accept_removal = True
+            #             reason_for_update = f"胜率接近(>{benchmark_hit_rate - improvement_threshold:.2f}%)且因子数减少({candidate_k_factors}<{benchmark_k_factors})"
+
+            if accept_removal and best_removal_candidate_this_iter:
                 # 接受移除
-                variable_to_remove = best_removal_candidate['removed_var']
-                params_for_best_removal = best_removal_candidate['params']
-                # 从 best_score_tuple_this_iter 更新全局最佳
-                current_best_hit_rate = best_score_tuple_this_iter[0]
-                current_best_mae = -best_score_tuple_this_iter[1]
+                variable_to_remove = best_removal_candidate_this_iter['removed_var']
+                params_for_best_removal = best_removal_candidate_this_iter['params']
+                # 更新全局最佳指标
+                current_best_score_tuple = best_candidate_score_tuple_this_iter
                 current_best_params = params_for_best_removal
                 # 更新变量列表
                 current_best_variables = next(item['remaining_vars'] for item in futures_removal if item['removed_var'] == variable_to_remove and item['params'] == params_for_best_removal)
 
                 if variable_to_remove in block_vars_list:
                     block_vars_list.remove(variable_to_remove)
-                
-                # --- 修改: 更新打印和日志 (胜率优先) ---
-                print(f"*** 块 '{block_name}' 找到改进: 移除 '{variable_to_remove}', 新最佳分数: HR={current_best_hit_rate:.2f}%, RMSE={current_best_mae:.6f}, Params: {current_best_params} ***")
+
+                # --- 修改: 更新打印和日志 (反映新逻辑) ---
+                new_hr, new_neg_k, new_neg_rmse = current_best_score_tuple
+                print(f"*** 块 '{block_name}' 找到改进: 移除 '{variable_to_remove}' ({reason_for_update}), 新最佳分数: HR={new_hr:.2f}%, K={-new_neg_k}, RMSE={-new_neg_rmse:.6f}, Params: {current_best_params} ***")
+                # print(f"*** 块 '{block_name}' 找到改进: 移除 '{variable_to_remove}' ({reason_for_update}), 新最佳分数: HR={current_best_hit_rate:.2f}%, RMSE={current_best_mae:.6f}, Params: {current_best_params} ***")
 
                 if log_file:
                     try:
                         log_file.write("\n" + "-"*35 + "\n")
                         log_file.write(f"--- 块 '{block_name}': 变量剔除结果 ---\n")
-                        log_file.write(f"剔除变量: '{variable_to_remove}' (因其提升了综合得分 (HR优先))\n")
+                        log_file.write(f"剔除变量: '{variable_to_remove}' (原因: {reason_for_update})\n") # 添加原因
                         log_file.write(f"当前变量组 ({len(current_best_variables)}): {current_best_variables}\n")
                         log_file.write(f"最佳参数: {current_best_params}\n")
-                        log_file.write(f"新平均胜率 (IS+OOS)/2: {current_best_hit_rate:.2f}%\n") # 胜率优先
-                        log_file.write(f"对应平均 RMSE (IS+OOS)/2: {current_best_mae:.6f}\n")
+                        log_file.write(f"新最佳得分 (HR, -K, -RMSE): {current_best_score_tuple[0]:.2f}, {current_best_score_tuple[1]}, {current_best_score_tuple[2]:.6f}\n")
                         log_file.write("-"*35 + "\n")
                     except Exception as log_e:
                         print(f"写入块 '{block_name}' 剔除日志时出错: {log_e}")
                 # --- 结束修改 ---
             else:
-                # --- 修改: 更新停止打印 (胜率优先) ---
-                print(f"块 '{block_name}' 内无变量移除可进一步改进综合得分 (当前 HR={current_best_hit_rate:.2f}%, RMSE={current_best_mae:.6f})。此块完成。")
+                # --- 修改: 更新停止打印 (反映新逻辑) ---
+                stop_hr, stop_neg_k, stop_neg_rmse = current_best_score_tuple
+                print(f"块 '{block_name}' 内无变量移除可获得严格更优解 (当前最佳: HR={stop_hr:.2f}%, K={-stop_neg_k}, RMSE={-stop_neg_rmse:.6f})。此块完成。")
+                # print(f"块 '{block_name}' 内无变量移除可满足新的优化条件 (当前 HR={current_best_hit_rate:.2f}%, k={current_best_params['k_factors']})。此块完成。")
                 block_stable = True
                 if log_file and eligible_vars_in_block:
                      try:
                          log_file.write("\n" + "-"*35 + "\n")
                          log_file.write(f"--- 块 '{block_name}': 停止剔除 ---\n")
-                         log_file.write(f"原因: 块内剩余变量移除无法改进当前最佳综合得分 (HR={current_best_hit_rate:.2f}%, RMSE={current_best_mae:.6f})。\n")
+                         log_file.write(f"原因: 块内剩余变量移除无法找到严格更优的评分元组 (Benchmark HR={stop_hr:.2f}%, K={-stop_neg_k}, RMSE={-stop_neg_rmse:.6f})。\n")
                          log_file.write("-"*35 + "\n")
                      except Exception as log_e:
                         print(f"写入块 '{block_name}' 停止日志时出错: {log_e}")
                 # --- 结束修改 ---
 
     print("\n--- 所有块处理完毕 --- ")
-    # --- 修改: 记录最终结果 (胜率优先) ---
+    # --- 修改: 记录最终结果 (反映新逻辑) ---
     final_variables = current_best_variables.copy()
     final_params = current_best_params
-    final_combined_hit_rate = current_best_hit_rate # 恢复
-    final_combined_mae = current_best_mae
-    # final_oos_hit_rate = current_best_oos_hit_rate # 移除
+    final_score_tuple = current_best_score_tuple
+    # final_combined_hit_rate = current_best_hit_rate # 移除
+    # final_combined_mae = current_best_mae # 移除
+    final_hr, final_neg_k, final_neg_rmse = final_score_tuple
     print(f"最终变量数量: {len(final_variables)}")
-    print(f"最终最佳平均胜率 (IS+OOS)/2: {final_combined_hit_rate:.2f}%") # 胜率优先
-    print(f"对应的最终最佳平均 RMSE (IS+OOS)/2: {final_combined_mae:.6f}")
+    print(f"最终最佳平均胜率 (IS+OOS)/2: {final_hr:.2f}%")
+    print(f"对应的因子数: {-final_neg_k}")
+    print(f"对应的最终最佳平均 RMSE (IS+OOS)/2: {-final_neg_rmse:.6f}")
     print(f"最终最佳参数: {final_params}")
+    # print(f"最终变量数量: {len(final_variables)}")
+    # print(f"最终最佳平均胜率 (IS+OOS)/2: {final_combined_hit_rate:.2f}%")
+    # print(f"对应的最终最佳平均 RMSE (IS+OOS)/2: {final_combined_mae:.6f}")
+    # print(f"最终最佳参数 (因子数最少优先): {final_params}")
     # --- 结束修改 ---
 
     print("\n--- 使用最终选择的变量和参数重新运行 DFM 模型 ---")
@@ -1585,7 +1757,8 @@ def run_tuning():
             final_k_factors = final_params['k_factors']
             final_p_shocks = final_k_factors
             
-            print(f"最终运行参数: 因子数={final_k_factors}, 冲击数={final_p_shocks}, 对数同比(预测变量)={USE_LOG_YOY_TRANSFORM}") # 使用更简洁的打印
+            print(f"最终运行参数: 因子数={final_k_factors}, 冲击数={final_p_shocks}") # 使用更简洁的打印
+            # 旧打印
 
             print("准备最终运行的数据...")
             # --- 删除: 移动到变量筛选前的连续缺失值检查 ---
@@ -1668,20 +1841,6 @@ def run_tuning():
             )
             # --- 结束修改 ---
 
-            # --- 原 LogYoY 逻辑 (注释掉) ---
-            # final_data_processed = final_data_numeric.copy()
-            # if USE_LOG_YOY_TRANSFORM and final_predictors:
-            #     print("  对预测变量应用对数同比转换...")
-            #     predictors_logyoy_final = apply_log_yoy_transform(final_data_processed[final_predictors])
-            #     final_data_processed = pd.concat([predictors_logyoy_final, final_data_processed[final_target]], axis=1)
-            #     final_data_processed = final_data_processed[final_variables]
-            #     if not final_data_processed.empty:
-            #         print("  移除 52 个前导 NaN 行 (LogYoY...")
-            #         if 52 >= len(final_data_processed):
-            #               raise ValueError(f"最终运行数据准备错误: 数据行数 ({len(final_data_processed)}) 不足以移除 LogYoY 的前导 NaN (52)")
-            #         final_data_processed = final_data_processed.iloc[52:]
-            # --- 结束原 LogYoY 逻辑 ---
-
             # 使用转换后的数据
             final_data_processed = final_data_processed_transformed
 
@@ -1719,10 +1878,10 @@ def run_tuning():
                 observation=final_data_std_masked_for_fit, # <--- 使用带掩码的数据进行最终拟合
                 n_factors=final_k_factors, 
                 n_shocks=final_p_shocks,   
-                n_iter=N_ITER_FIXED,
+                n_iter=n_iter_to_use, # 使用 n_iter_to_use
                 error='False'
             )
-            print("最终 DFM 模型运行成功。")
+            print(f"最终 DFM 模型运行成功 (使用 {n_iter_to_use} 次迭代)。")
 
             # <-- 新增: 检查最终模型输入和输出时间范围 -->
             try:
@@ -1891,7 +2050,11 @@ def run_tuning():
         traceback.print_exc()
     # --- 结束因子贡献度计算 ---
     # <-- 移动因子贡献度计算块结束 -->
-        
+
+    # --- 新增: 调用 Bai & Ng IC 计算 --- 
+    # Block related to Bai & Ng IC calculation removed as requested.
+    # --- 结束 IC 计算调用 ---
+
     if final_dfm_results_obj is not None and data_for_analysis is not None: 
         try:
             print("\n调用最终结果分析与保存函数...")
@@ -1899,6 +2062,7 @@ def run_tuning():
             print(f"[DEBUG] Passing to analyze_and_save_final_results:")
             print(f"  run_output_dir = '{run_output_dir}'") # 打印传入的目录
             print(f"  timestamp_str = '{timestamp_str}'") # 打印传入的时间戳
+            # --- 修改: 传递 IC 推荐的 k 值 --- 
             analyze_and_save_final_results(
                 run_output_dir=run_output_dir,
                 timestamp_str=timestamp_str,
@@ -1910,15 +2074,16 @@ def run_tuning():
                 best_variables=final_variables,
                 best_params=final_params,
                 var_type_map=var_type_map,
-                best_avg_hit_rate_tuning=final_combined_hit_rate,
-                best_avg_mae_tuning=final_combined_mae,
+                best_avg_hit_rate_tuning=final_hr,
+                best_avg_mae_tuning=-final_neg_rmse, # 传递对应的最终 RMSE
                 total_runtime_seconds=total_runtime_seconds,
-                # <-- 传递计算好的结果或 None -->
-                factor_contributions=factor_contributions, 
+                factor_contributions=factor_contributions,
                 final_transform_log=final_transform_details,
                 pca_results_df=pca_results_df,
-                contribution_results_df=contribution_results_df
+                contribution_results_df=contribution_results_df,
+                var_industry_map=var_industry_map # 确保这是最后一个传递的参数
             )
+            # --- 结束修改 ---
         except Exception as e:
             print(f"分析和保存最终结果时出错: {e}")
             import traceback

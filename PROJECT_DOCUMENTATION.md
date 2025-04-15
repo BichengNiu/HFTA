@@ -63,31 +63,33 @@
     *   如果变量是平稳的 (p-value < 阈值)，则使用其**原始水平值**。
     *   如果变量非平稳，则对其进行**一阶差分** (`.diff(1)`)。
     *   **目标变量始终保持原始水平值，不进行此转换。**
-    *   *注: 代码中存在一个未使用的 `USE_LOG_YOY_TRANSFORM` 标志和相应的 `apply_log_yoy_transform` 函数，当前模型拟合过程不使用此逻辑。*
 2.  **标准化:** 对经过平稳性转换的数据进行标准化。
 3.  **忽略特定时期的目标值 (训练时):**
     *   在将数据**输入 DFM 模型进行参数估计时**（包括调优评估和最终模型训练），将每年 1 月和 2 月对应的**目标变量**观测值设置为 `NaN`。
     *   **目的:** 减轻春节等季节性因素对模型参数估计的潜在干扰。
     *   **注意:** 这**不影响**后续模型评估指标的计算，因为评估时使用的是未经修改的原始目标序列。
-4.  **确定因子数范围:**
-    *   根据初始变量集，按照 `var_type_map` (从 Excel 文件读取的指标类型) 进行分组。
+4.  **加载指标映射:**
+    *   从 Excel 文件 (`经济数据库.xlsx`) 的第一个 Sheet 页（预期为 '指标体系'）加载指标名称到其**类型** (`var_type_map`) 和**行业** (`var_industry_map`) 的映射。
+    *   这些映射用于后续的变量分组和结果分析（如热力图排序）。如果 '行业' 列不存在，`var_industry_map` 会为空，热力图将不按行业排序。
+5.  **确定因子数范围:**
+    *   根据初始变量集，按照 `var_type_map` 进行分组。
     *   将变量数少于 3 个的组合并到 "其他" 组。
     *   最终的因子数范围 (`K_FACTORS_RANGE`) 基于分组后的块数动态确定 (从 1 到块数)。
-5.  **变量选择 (分块后向剔除):**
-    *   **初始化:** 使用所有变量和所有候选因子数进行评估，确定一个初始的最佳参数组合和性能基准（基于优化目标）。
+6.  **变量选择 (分块后向剔除):**
+    *   **初始化:** 使用所有（经过连续缺失值筛选后的）变量和所有候选因子数进行评估，确定一个初始的最佳参数组合和性能基准（基于优化目标）。
     *   **分块处理:** 将变量按照类型分成不同的块。
     *   **迭代剔除:** 对每个块进行迭代：
         *   尝试移除块中的每一个变量。
         *   对于每次移除，使用剩余变量和所有候选因子数重新评估 DFM 模型性能。
-        *   选择能最大程度**改进优化目标**（优先最大化平均胜率，其次最小化平均 **RMSE**）的移除操作。
+        *   选择能最大程度**改进优化目标**（1. 最大化平均胜率；2. 最小化因子数；3. 最小化平均 RMSE）的移除操作。
         *   如果找到了改进，则**永久移除**该变量，更新当前最佳变量集、最佳参数和最佳性能得分，并继续在该块内尝试移除下一个变量。
         *   如果块内所有剩余变量的移除都**无法改进**当前最佳性能，则该块处理完毕，进入下一个块。
-6.  **并行计算:** 使用 `concurrent.futures.ProcessPoolExecutor` 并行执行 DFM 评估，加速调优过程。
-7.  **最终模型训练:**
+7.  **并行计算:** 使用 `concurrent.futures.ProcessPoolExecutor` 并行执行 DFM 评估，加速调优过程。
+8.  **最终模型训练:**
     *   使用后向剔除后最终确定的最佳变量组合和最佳因子数 (`final_variables`, `final_params`)。
     *   再次进行变量级平稳性转换和标准化。
     *   同样在训练时忽略 1 月和 2 月的目标变量值。
-    *   使用**全部可用数据**（经过转换和标准化处理）重新训练 DFM 模型，得到最终的模型参数（因子载荷 `Lambda`、状态转移矩阵 `A` 等）和平滑后的因子序列 (`x_sm`)。
+    *   使用**全部可用数据**（经过转换和标准化处理）和**固定的迭代次数 (`N_ITER_FIXED`)** 重新训练 DFM 模型，得到最终的模型参数（因子载荷 `Lambda`、状态转移矩阵 `A` 等）和平滑后的因子序列 (`x_sm`)。
 
 ## 4. 模型评估思路
 
@@ -100,25 +102,28 @@
     *   应用变量级平稳性转换 (`apply_stationarity_transforms`)。
     *   标准化数据。
     *   训练时忽略 1 月/2 月目标值 (`NaN`)。
-3.  **模型拟合:** 使用处理后的数据拟合 DFM 模型 (`DFM_EMalgo`)。
+3.  **模型拟合:** 使用处理后的数据和**固定的迭代次数 (`N_ITER_FIXED`)** 拟合 DFM 模型 (`DFM_EMalgo`)。
 4.  **生成预测值 (Nowcast):**
     *   获取平滑后的因子序列 (`factors_sm = dfm_results.x_sm`) 和因子载荷矩阵 (`lambda_matrix = dfm_results.Lambda`)。
     *   提取目标变量对应的载荷向量 (`lambda_target`)。
     *   计算标准化的预测值: `nowcast_standardized = factors_sm @ lambda_target`。
-    *   **反标准化:** 将预测值转换回原始尺度: `nowcast_orig_values = nowcast_standardized * target_std + target_mean`。
+    *   **反标准化:** 将预测值转换回原始尺度: `nowcast_orig_values = nowcast_standardized * target_std_original + target_mean_original` (使用基于原始目标序列计算的稳定均值和标准差)。
 5.  **指标计算:**
     *   **对齐:** 将反标准化后的预测序列 (`nowcast_series_orig`) 与**未经任何转换的原始目标变量序列** (`original_target_series_full`) 在时间上对齐。
     *   **划分:** 将对齐后的数据划分为训练期 (`<= TRAIN_END_DATE`) 和验证期 (`VALIDATION_START_DATE` 到 `VALIDATION_END_DATE`)。
     *   **计算指标:**
-        *   **均方根误差 (RMSE):** 分别计算训练期和验证期的 RMSE (`is_rmse`, `oos_rmse`)。 `RMSE = sqrt(mean((Actual - Predicted)^2))`
+        *   **均方根误差 (RMSE):** 分别计算训练期和验证期的 RMSE (`is_rmse`, `oos_rmse`)。 `RMSE = sqrt(mean((Target - Nowcast_Orig)^2))` (注意：代码中使用 `Target` 列名进行计算)
         *   **胜率 (Hit Rate):**
-            *   计算预测值和实际值的**一阶差分**。
-            *   比较差分符号是否一致 (`sign(Actual_diff) == sign(Predicted_diff)`)。
+            *   计算预测值 (`Nowcast_Orig`) 和实际值 (`Target`) 的**一阶差分**。
+            *   比较差分符号是否一致 (`sign(Target_diff) == sign(Nowcast_Orig_diff)`)。
             *   胜率 = (符号一致且实际值变化非零的点数) / (实际值变化非零的总点数) * 100%。
             *   分别计算训练期和验证期的胜率 (`is_hit_rate`, `oos_hit_rate`)。
 6.  **优化目标 (用于调优):**
-    *   **主要目标:** 最大化**平均胜率** `(is_hit_rate + oos_hit_rate) / 2`。
-    *   **次要目标:** 在平均胜率相同时，最小化**平均 RMSE** `(is_rmse + oos_rmse) / 2`。
+    *   **评分元组:** `(平均胜率, -因子数, -平均RMSE)`。
+    *   **比较逻辑:** 选择使该元组**最大化**的变量移除操作。这意味着：
+        *   1. 优先最大化**平均胜率** `(is_hit_rate + oos_hit_rate) / 2`。
+        *   2. 在平均胜率相近时，优先选择**因子数 (`k_factors`) 更少**的组合。
+        *   3. 在前两者都相同时，优先选择**平均 RMSE** `(is_rmse + oos_rmse) / 2` **更低**的组合。
 
 **最终结果分析 (`analyze_and_save_final_results` 函数):**
 
@@ -127,7 +132,7 @@
 *   计算因子贡献度，分析每个变量主要由哪个因子解释。
 *   生成因子解释文本（基于载荷绝对值 Top 5 的变量）。
 *   为每个估计出的因子生成单独的时间序列图（例如 `factor_1_timeseries.png`）。
-*   将所有配置、结果指标、最终变量列表及类型、因子载荷、因子序列、预测值与真实值对比、因子贡献度、因子解释、**对齐后的原始数据 (`Aligned_Original_Data`)**、**输入 DFM 模型的数据 (`Data_Input_to_DFM`)** 等保存到 Excel 文件 (`result.xlsx`) 的不同 Sheet 页中。 
+*   将所有配置、结果指标、最终变量列表及类型、因子载荷、因子序列、预测值与真实值对比、因子贡献度、因子解释、**对齐后的原始数据 (`Aligned_Original_Data`)**、**输入 DFM 模型的数据 (`Data_Input_to_DFM`)** 等保存到 Excel 文件 (`result.xlsx`) 的不同 Sheet 页中。
 
 ## 5. 最终结果分析与输出 (`analyze_and_save_final_results` 函数)
 
@@ -143,17 +148,19 @@
     *   **实际观测值 (`Target (原始水平)`)** 只在它们存在的点上绘制（通常是每个月的最后一个周五，并屏蔽 1/2 月的数据点）。
 3.  **因子载荷热力图 (`factor_loadings_heatmap_{timestamp}.png`):** (与之前一致)
     *   生成热力图展示最终模型的因子载荷，帮助理解每个因子与哪些变量关联。
+    *   **排序:** 如果成功加载了 `var_industry_map`，热力图的 Y 轴（变量）将按照**行业**和变量名排序。
 4.  **因子时间序列图 (`all_factors_timeseries_{timestamp}.png`):** (与之前一致)
     *   生成一张包含所有估计出的因子（标准化后）时间序列的图。
 5.  **结果 Excel 文件 (`result_{timestamp}.xlsx`):** (完全重写)
     *   包含多个 Sheet 页，汇总了模型配置、结果和相关数据。缺失值 (`NaN`) 在 Excel 中通常显示为空白单元格 (`""`)。
     *   **`Summary_Overview`:**
-        *   包含关键的运行参数（最终变量数、最佳因子数、是否使用对数同比转换标志位状态等）。
+        *   包含关键的运行参数（最终变量数、最佳因子数等）。
         *   最终模型的性能指标（训练期/验证期 Hit Rate、验证期 RMSE、调优过程中的最佳平均指标等）。
         *   总运行时间。
         *   追加了**分析文本 (`Analysis Text`)**，提供对最终结果的文字总结。
         *   追加了**PCA 解释方差 (`PCA Explained Variance`)** 表格，显示基于最终输入数据计算的 PCA 结果。
         *   追加了**因子对目标贡献度 (`Factor Contribution to Target Variance`)** 表格。
+        *   **移除了 Bai & Ng IC 相关信息。**
     *   **`Final_Selected_Variables`:**
         *   列出最终模型选择使用的变量名称 (`Variable Name`)。
         *   每个变量的类型 (`Variable Type`，来自输入 Excel)。
@@ -172,7 +179,7 @@
         *   展示最终输入给 DFM 模型进行**最后一次训练**的**标准化后**的数据（`final_data_std_masked_for_fit` 的近似，但可能包含训练时掩码的目标值，且通常四舍五入）。
     *   **`Full_Aligned_Data_Orig`:**
         *   包含由 `data_preparation.py` 返回的、所有**初始加载**的变量（目标+预测）在经过**频率统一和时间对齐**（重采样到周度 'W-FRI'）后的**原始水平**数据。包含了因对齐和重采样产生的 `NaN` 值。
-        
+
 **已移除的旧 Sheets:**
 
 *   `Final_Factor_Loadings` (合并到 `Final_Selected_Variables`)
