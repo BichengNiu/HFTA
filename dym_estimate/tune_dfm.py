@@ -24,6 +24,11 @@ from statsmodels.tsa.stattools import adfuller # <--- 新增 ADF 检验导入
 from sklearn.decomposition import PCA # <-- 新增：导入 PCA
 from sklearn.impute import SimpleImputer # <-- 新增：导入 SimpleImputer
 
+# --- 新增：动态构建数据文件路径 ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(SCRIPT_DIR) # 假设脚本在项目根目录的子文件夹下
+# --- 结束新增 ---
+
 # --- 尝试导入自定义模块 ---
 try:
     from data_preparation import prepare_data
@@ -46,7 +51,9 @@ _run_tuning_executed = False
 
 # --- 常量 ---
 # *** MODIFIED: Update Excel file if different, TARGET_VARIABLE, TARGET_FREQ ***
-EXCEL_DATA_FILE = '经济数据库.xlsx'
+# --- 修改: 使用动态构建的路径 --- 
+EXCEL_DATA_FILE = os.path.join(BASE_DIR, 'data', '经济数据库.xlsx')
+# --- 结束修改 --- 
 TARGET_VARIABLE = '规模以上工业增加值:当月同比' # NEW Target Variable
 TARGET_FREQ = 'W-FRI'                   # Target frequency remains Weekly Friday
 # *** ADDED: Define TARGET_SHEET_NAME constant ***
@@ -57,6 +64,10 @@ DETAILED_LOG_FILE = "调优日志.txt"
 FINAL_FACTOR_FILE = os.path.join('dfm_result', 'final_factors.png')
 FINAL_PLOT_FILE = os.path.join('dfm_result', 'final_nowcast_comparison.png')
 EXCEL_OUTPUT_FILE = os.path.join('dfm_result', 'result.xlsx') # Renamed output file
+
+# --- 新增：控制是否移除长连续缺失变量 ---
+REMOVE_VARS_WITH_CONSECUTIVE_NANS = True # 设置为 False 则不执行基于连续缺失的变量移除
+CONSECUTIVE_NAN_THRESHOLD = 10           # 定义连续缺失的阈值
 
 # --- 测试模式开关 和 迭代次数 ---
 TEST_MODE = False # 设置为 True 以运行快速测试版
@@ -795,8 +806,10 @@ def analyze_and_save_final_results(
                         combined_weekly_df = combined_weekly_df.reset_index()
                         # <-- 新增: 调整最终列顺序 (包含因子列) -->
                         factor_cols_in_df = [col for col in combined_weekly_df.columns if col.startswith('Factor')]
-                        desired_final_cols = ['index', f'Nowcast{diff_label_for_metrics}'] + factor_cols_in_df + [f'Target{diff_label_for_metrics}', 'Monthly_Forecast']
+                        # <-- 修改：移除 Monthly_Forecast -->
+                        desired_final_cols = ['index', f'Nowcast{diff_label_for_metrics}'] + factor_cols_in_df + [f'Target{diff_label_for_metrics}']
                         # desired_final_cols = ['index', f'Nowcast{diff_label_for_metrics}', f'Target{diff_label_for_metrics}', 'Monthly_Forecast'] # 旧顺序
+                        # <-- 结束修改 -->
                         # <-- 结束新增 -->
                         existing_final_cols = [col for col in desired_final_cols if col in combined_weekly_df.columns]
                         combined_weekly_df = combined_weekly_df[existing_final_cols]
@@ -1327,66 +1340,79 @@ def run_tuning():
     print("-"*30)
     # --- 结束新增 ---
 
-    # --- 新增: 在变量筛选前检查初始预测变量的连续缺失值 (>=10期) ---
-    print(f"\n--- 检查初始预测变量 ({len(initial_variables)}) 的连续缺失值 (>=10期)... ---")
-    consecutive_nan_threshold_init = 10
-    vars_to_remove_consecutive_init = []
+    # --- 修改: 将连续缺失检查包裹在条件块中 --- 
+    if REMOVE_VARS_WITH_CONSECUTIVE_NANS:
+        print(f"\n--- (启用) 检查初始预测变量 ({len(initial_variables)}) 的连续缺失值 (阈值 >= {CONSECUTIVE_NAN_THRESHOLD})... ---")
+        consecutive_nan_threshold_init = CONSECUTIVE_NAN_THRESHOLD # 使用常量
+        vars_to_remove_consecutive_init = []
 
-    # 检查的对象是 all_data_aligned_weekly 中对应的初始预测变量列
-    for col in initial_variables:
-        # --- 新增: 跳过目标变量的检查 ---
-        if col == TARGET_VARIABLE:
-            print(f"    跳过对目标变量 '{col}' 的连续缺失值检查。")
-            continue
-        # --- 结束新增 ---
+        # 检查的对象是 all_data_aligned_weekly 中对应的初始预测变量列
+        for col in initial_variables:
+            # --- 新增: 跳过目标变量的检查 ---
+            if col == TARGET_VARIABLE:
+                # print(f"    跳过对目标变量 '{col}' 的连续缺失值检查。") # 可以保持静默
+                continue
+            # --- 结束新增 ---
 
-        # 计算连续 NaN
-        is_na = all_data_aligned_weekly[col].isna()
-        na_blocks = is_na.ne(is_na.shift()).cumsum()[is_na]
-        if not na_blocks.empty:
-            max_consecutive_nan = na_blocks.value_counts().max()
-            if max_consecutive_nan >= consecutive_nan_threshold_init:
-                vars_to_remove_consecutive_init.append((col, max_consecutive_nan))
+            # 计算连续 NaN
+            is_na = all_data_aligned_weekly[col].isna()
+            na_blocks = is_na.ne(is_na.shift()).cumsum()[is_na]
+            if not na_blocks.empty:
+                max_consecutive_nan = na_blocks.value_counts().max()
+                if max_consecutive_nan >= consecutive_nan_threshold_init:
+                    vars_to_remove_consecutive_init.append((col, max_consecutive_nan))
 
-    if vars_to_remove_consecutive_init:
-        print(f"  警告: 以下初始预测变量因存在 {consecutive_nan_threshold_init} 期或更长的连续缺失值，将被移除，不参与后续筛选:")
-        removed_vars_log_init = []
-        for var_rm, max_nan in vars_to_remove_consecutive_init:
-            print(f"    - {var_rm} (最大连续缺失: {max_nan} 期)")
-            removed_vars_log_init.append(var_rm)
+        if vars_to_remove_consecutive_init:
+            print(f"  警告: 以下初始预测变量因存在 {consecutive_nan_threshold_init} 期或更长的连续缺失值，将被移除，不参与后续筛选:")
+            removed_vars_log_init = []
+            for var_rm, max_nan in vars_to_remove_consecutive_init:
+                print(f"    - {var_rm} (最大连续缺失: {max_nan} 期)")
+                removed_vars_log_init.append(var_rm)
 
-        # 从 initial_predictors 和 initial_variables 中移除这些变量
-        initial_predictors = [v for v in initial_variables if v != TARGET_VARIABLE and v not in removed_vars_log_init] # 确保目标变量始终在 initial_predictors 之外
-        initial_variables = [v for v in initial_variables if v not in removed_vars_log_init] # 移除非目标变量
+            # 从 initial_predictors 和 initial_variables 中移除这些变量
+            initial_predictors = [v for v in initial_variables if v != TARGET_VARIABLE and v not in removed_vars_log_init] # 确保目标变量始终在 initial_predictors 之外
+            initial_variables = [v for v in initial_variables if v not in removed_vars_log_init] # 移除非目标变量
 
-        print(f"  移除长连续缺失变量后，剩余初始预测变量数: {len(initial_predictors)}")
-        # --- 新增: 确保目标变量仍在 initial_variables 中 ---
-        if TARGET_VARIABLE not in initial_variables:
-             print(f"  警告: 目标变量 '{TARGET_VARIABLE}' 在移除其他变量后丢失，正在重新添加...")
-             initial_variables.append(TARGET_VARIABLE)
-             initial_variables.sort() # 可选：保持排序
-        # --- 结束新增 ---
+            print(f"  移除长连续缺失变量后，剩余初始预测变量数: {len(initial_predictors)}")
+            # --- 新增: 确保目标变量仍在 initial_variables 中 --- 
+            if TARGET_VARIABLE not in initial_variables:
+                 print(f"  警告: 目标变量 '{TARGET_VARIABLE}' 在移除其他变量后丢失，正在重新添加...")
+                 initial_variables.append(TARGET_VARIABLE)
+                 initial_variables.sort() # 可选：保持排序
+            # --- 结束新增 ---
+            if log_file:
+                 try:
+                     log_file.write("\n" + "-"*35 + "\n")
+                     log_file.write(f"--- (启用) 变量筛选前连续缺失值检查 (阈值 {consecutive_nan_threshold_init}期) ---\n")
+                     log_file.write(f"移除变量: {removed_vars_log_init}\n")
+                     log_file.write(f"剩余预测变量数: {len(initial_predictors)}\n")
+                     log_file.write("-"*35 + "\n")
+                 except Exception as log_e:
+                     print(f"写入初始连续缺失检查日志时出错: {log_e}")
+        else:
+            print(f"  所有初始预测变量的最大连续缺失值均低于 {consecutive_nan_threshold_init} 期。所有变量均通过此检查！")
+            if log_file:
+                try:
+                    log_file.write("\n" + "-"*35 + "\n")
+                    log_file.write(f"--- (启用) 变量筛选前连续缺失值检查 (阈值 {consecutive_nan_threshold_init}期) ---\n")
+                    log_file.write(f"所有初始预测变量均通过检查。\n")
+                    log_file.write("-"*35 + "\n")
+                except Exception as log_e:
+                    print(f"写入初始连续缺失检查日志时出错: {log_e}")
+    else:
+        # 如果不执行移除，则打印信息
+        print(f"\n--- (禁用) 跳过基于连续缺失值 (阈值 >= {CONSECUTIVE_NAN_THRESHOLD}) 的初始变量移除步骤。---")
+        initial_predictors = [v for v in initial_variables if v != TARGET_VARIABLE] # 仍然需要定义 initial_predictors
         if log_file:
              try:
                  log_file.write("\n" + "-"*35 + "\n")
-                 log_file.write(f"--- 变量筛选前连续缺失值检查 ({consecutive_nan_threshold_init}期) ---\n")
-                 log_file.write(f"移除变量: {removed_vars_log_init}\n")
-                 log_file.write(f"剩余预测变量数: {len(initial_predictors)}\n")
+                 log_file.write(f"--- (禁用) 跳过变量筛选前连续缺失值检查 (阈值 {CONSECUTIVE_NAN_THRESHOLD}期) ---\n")
                  log_file.write("-"*35 + "\n")
              except Exception as log_e:
-                 print(f"写入初始连续缺失检查日志时出错: {log_e}")
-    else:
-        print(f"  所有初始预测变量的最大连续缺失值均低于 {consecutive_nan_threshold_init} 期。所有变量均通过此检查！")
-        if log_file:
-            try:
-                log_file.write("\n" + "-"*35 + "\n")
-                log_file.write(f"--- 变量筛选前连续缺失值检查 ({consecutive_nan_threshold_init}期) ---\n")
-                log_file.write(f"所有初始预测变量均通过检查。\n")
-                log_file.write("-"*35 + "\n")
-            except Exception as log_e:
-                print(f"写入初始连续缺失检查日志时出错: {log_e}")
+                 print(f"写入禁用连续缺失检查日志时出错: {log_e}")
+
     print("-"*30) # 添加分隔符
-    # --- 结束新增检查 ---
+    # --- 结束修改 --- 
 
     # --- 原有代码被跳过 ---
     # print("\n--- 确定初始变量块和动态因子数范围 ---")
