@@ -4,7 +4,9 @@ import numpy as np
 import sys
 import os
 from collections import Counter # Ensure Counter is imported
-from collections import defaultdict # 引入 defaultdict
+from collections import defaultdict # 引入 defaultdict 
+from typing import Tuple, Dict, Optional, List # <-- 新增: 引入 Optional, List
+import unicodedata # <-- 新增导入 for normalization
 
 # --- NEW: Flag for testing with reduced variables ---
 USE_REDUCED_VARIABLES_FOR_TESTING = False # <<--- 关闭测试模式，使用所有变量
@@ -47,23 +49,126 @@ def extract_industry(sheet_name):
     # 如果无法解析，返回默认值或 None
     return "Uncategorized"
 
+# --- NEW: Function to load mappings --- 
+def load_mappings(
+    excel_path: str, 
+    sheet_name: str, 
+    indicator_col: str = '高频指标', 
+    type_col: str = '类型', 
+    industry_col: Optional[str] = '行业' # Industry column is optional
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """
+    Loads variable type and industry mappings from a specified sheet in an Excel file.
+    Normalizes indicator names (keys) to lowercase NFKC.
+
+    Args:
+        excel_path (str): Path to the Excel file.
+        sheet_name (str): Name of the sheet containing the mappings.
+        indicator_col (str): Name of the column with indicator names.
+        type_col (str): Name of the column with indicator types.
+        industry_col (Optional[str]): Name of the column with industry names. If None or not found, 
+                                     industry map will be empty.
+
+    Returns:
+        Tuple[Dict[str, str], Dict[str, str]]: 
+            - var_type_map: Dictionary mapping normalized indicator name to type.
+            - var_industry_map: Dictionary mapping normalized indicator name to industry.
+    """
+    var_type_map = {}
+    var_industry_map = {}
+    print(f"\n--- [Mappings] Loading type/industry maps from: ")
+    print(f"    Excel: {excel_path}")
+    print(f"    Sheet: {sheet_name}")
+    print(f"    Indicator Col: '{indicator_col}', Type Col: '{type_col}', Industry Col: '{industry_col}'")
+
+    try:
+        excel_file_obj = pd.ExcelFile(excel_path)
+        if sheet_name not in excel_file_obj.sheet_names:
+             raise FileNotFoundError(f"Sheet '{sheet_name}' not found in '{excel_path}'")
+
+        indicator_sheet = pd.read_excel(excel_file_obj, sheet_name=sheet_name)
+        
+        # Normalize column names
+        indicator_sheet.columns = indicator_sheet.columns.str.strip()
+        indicator_col = indicator_col.strip()
+        type_col = type_col.strip()
+        if industry_col:
+            industry_col = industry_col.strip()
+
+        # Check required columns exist
+        if indicator_col not in indicator_sheet.columns or type_col not in indicator_sheet.columns:
+            raise ValueError(f"未找到必需的列 '{indicator_col}' 或 '{type_col}' 在 sheet '{sheet_name}'")
+        
+        # Create Type Map
+        var_type_map_temp = pd.Series(
+            indicator_sheet[type_col].astype(str).str.strip().values,
+            index=indicator_sheet[indicator_col].astype(str).str.strip()
+        ).to_dict()
+        # Normalize keys and filter NaNs/empty strings
+        var_type_map = {unicodedata.normalize('NFKC', str(k)).strip().lower(): str(v).strip()
+                        for k, v in var_type_map_temp.items()
+                        if pd.notna(k) and str(k).strip().lower() not in ['', 'nan'] 
+                        and pd.notna(v) and str(v).strip().lower() not in ['', 'nan']}
+        print(f"  [Mappings] Successfully created type map with {len(var_type_map)} entries.")
+
+        # Create Industry Map (optional)
+        if industry_col and industry_col in indicator_sheet.columns:
+            industry_map_temp = pd.Series(
+                indicator_sheet[industry_col].astype(str).str.strip().values,
+                index=indicator_sheet[indicator_col].astype(str).str.strip() # Use the same index as type map
+            ).to_dict()
+            # Normalize keys and filter NaNs/empty strings
+            var_industry_map = {unicodedata.normalize('NFKC', str(k)).strip().lower(): str(v).strip()
+                                for k, v in industry_map_temp.items()
+                                if pd.notna(k) and str(k).strip().lower() not in ['', 'nan'] 
+                                and pd.notna(v) and str(v).strip().lower() not in ['', 'nan']}
+            print(f"  [Mappings] Successfully created industry map with {len(var_industry_map)} entries.")
+        elif industry_col:
+             print(f"  [Mappings] Warning: Industry column '{industry_col}' not found in sheet '{sheet_name}'. Industry map will be empty.")
+        else:
+             print(f"  [Mappings] Industry column not specified. Industry map will be empty.")
+
+    except FileNotFoundError as e:
+        print(f"Error loading mappings: {e}")
+        # Return empty maps on file/sheet not found
+    except ValueError as e:
+        print(f"Error processing mapping sheet: {e}")
+        # Return empty maps on column errors
+    except Exception as e:
+        print(f"An unexpected error occurred while loading mappings: {e}")
+        # Return empty maps on other errors
+
+    print(f"--- [Mappings] Loading finished. Type map size: {len(var_type_map)}, Industry map size: {len(var_industry_map)} ---")
+    return var_type_map, var_industry_map
+
 # --- REVISED: prepare_data function ---
-def prepare_data(excel_path: str, target_freq: str, target_sheet_name: str, target_variable_name: str) -> pd.DataFrame | None:
+def prepare_data(
+    excel_path: str, 
+    target_freq: str, 
+    target_sheet_name: str, 
+    target_variable_name: str,
+    # --- 新增参数 --- 
+    consecutive_nan_threshold: Optional[int] = None 
+) -> Tuple[Optional[pd.DataFrame], Optional[Dict]]: # <-- 修改返回类型
     """
     Loads data from an Excel file, automatically identifies daily/weekly predictor sheets
     and the specified monthly target sheet, aligns all data to the target_freq
     (e.g., 'W-FRI') according to specific rules (daily=mean, weekly=last, monthly=align_to_nearest_friday_from_col_A),
-    and returns the final aligned DataFrame.
+    optionally removes variables with excessive consecutive NaNs,
+    and returns the final aligned DataFrame and a variable-to-industry mapping.
 
     Args:
         excel_path (str): Path to the Excel data file.
         target_freq (str): The target frequency string (e.g., 'W-FRI'). Must end in '-FRI'.
         target_sheet_name (str): Name of the sheet containing the target variable.
         target_variable_name (str): Name of the target variable column (expected in Col B).
+        consecutive_nan_threshold (Optional[int]): If set, remove predictor variables with 
+                                                  consecutive NaNs >= this threshold. Defaults to None.
 
     Returns:
-        pd.DataFrame: A DataFrame containing the aligned weekly data,
-                      or None if processing fails.
+        Tuple[Optional[pd.DataFrame], Optional[Dict]]: 
+            - A DataFrame containing the aligned weekly data, or None if processing fails.
+            - A dictionary mapping variable names (lowercase, normalized) to their inferred industry.
     """
     print(f"\n--- [Data Prep] 开始加载和处理数据 (目标频率: {target_freq}) ---")
     if CREATE_REDUCED_TEST_SET:
@@ -72,10 +177,12 @@ def prepare_data(excel_path: str, target_freq: str, target_sheet_name: str, targ
     # <-- 新增: 验证目标频率 -->
     if not target_freq.upper().endswith('-FRI'):
         print(f"错误: [Data Prep] 当前目标对齐逻辑仅支持周五 (W-FRI)。提供的目标频率 '{target_freq}' 无效。")
-        return None
+        return None, None
     # <-- 结束新增 -->
 
     print(f"  [Data Prep] 目标 Sheet: '{target_sheet_name}', 目标变量: '{target_variable_name}' (预期在 B 列)")
+
+    var_industry_map = {} # <-- 初始化行业映射字典
 
     try:
         excel_file = pd.ExcelFile(excel_path)
@@ -91,6 +198,7 @@ def prepare_data(excel_path: str, target_freq: str, target_sheet_name: str, targ
             print(f"    [Data Prep] 正在检查 Sheet: {sheet_name}...")
             df = None
             freq_type = None
+            industry_name = extract_industry(sheet_name) # 提取行业名称
 
             # 1a: 检查是否是目标 Sheet
             if sheet_name == target_sheet_name:
@@ -147,6 +255,11 @@ def prepare_data(excel_path: str, target_freq: str, target_sheet_name: str, targ
                     else:
                         print(f"      目标 Sheet 数据加载和初步解析完成。Shape: {target_data_raw.shape}")
                     # <-- 结束修改 -->
+
+                    if target_data_raw is not None:
+                        # 将目标变量加入行业映射 (使用规范化名称)
+                        norm_target_name = target_variable_name.strip().lower() # 假设目标变量来自宏观
+                        var_industry_map[norm_target_name] = industry_name if industry_name != "Uncategorized" else "Macro" 
                 except Exception as e:
                     print(f"      加载或解析目标 Sheet '{sheet_name}' 时出错: {e}. 已跳过。")
                     continue
@@ -228,8 +341,7 @@ def prepare_data(excel_path: str, target_freq: str, target_sheet_name: str, targ
                      # Check if numeric conversion resulted in empty DataFrame
                      if not df_numeric.empty and not df_numeric.isnull().all().all():
                          # --- 新增：记录列来源 ---
-                         industry = extract_industry(sheet_name) # 使用辅助函数提取行业
-                         current_sheet_origin = {'sheet_name': sheet_name, 'industry': industry, 'type': freq_type}
+                         current_sheet_origin = {'sheet_name': sheet_name, 'industry': industry_name, 'type': freq_type}
                          for col in df_numeric.columns:
                              # 如果列名已存在 (来自不同频率的同名指标?)，我们可能需要决定如何处理
                              # 暂时：如果列名已存在，保留第一个来源信息
@@ -239,16 +351,13 @@ def prepare_data(excel_path: str, target_freq: str, target_sheet_name: str, targ
                                  # print(f"      警告: 列 '{col}' 在之前的 Sheet 中已存在。将保留第一个来源信息 ({column_origins[col]['sheet_name']})。")
                          # --- 结束新增 ---
 
-                         print(f"      Sheet '{sheet_name}' 加载和处理完成. Shape after potential reduction: {df_numeric.shape}.") # Updated print
-
-                         # --- 修正后的追加逻辑 ---
-                         if freq_type == 'monthly_target':
-                              # Assign the single-column DataFrame to the monthly list
-                              data_parts['monthly'].append(df_numeric)
-                         elif freq_type == 'daily' or freq_type == 'weekly': # 直接检查类型
-                              data_parts[freq_type].append(df_numeric) # 直接追加，defaultdict 会自动创建 list
-                         # --- 结束修正 ---
-
+                         print(f"      Sheet '{sheet_name}' ({industry_name}) 处理完成，加入 {freq_type} 数据。 Shape: {df_numeric.shape}, Cols: {df_numeric.columns.tolist()[:5]}...")
+                         data_parts[freq_type].append(df_numeric)
+                         # 填充行业映射 (使用小写规范化列名)
+                         for col in df_numeric.columns:
+                             norm_col = str(col).strip().lower()
+                             if norm_col:
+                                 var_industry_map[norm_col] = industry_name
                      else:
                         print(f"      Sheet '{sheet_name}' 在转换为数值后为空或全为 NaN，已跳过。")
                 else:
@@ -257,7 +366,7 @@ def prepare_data(excel_path: str, target_freq: str, target_sheet_name: str, targ
         # --- 检查是否加载到必要数据 ---
         if target_data_raw is None:
              print(f"错误：[Data Prep] 未能成功加载或处理目标 Sheet '{target_sheet_name}' 的数据 (需要 '{target_variable_name}' 和 'PublicationDate' 列)。")
-             return None
+             return None, None
         if not data_parts['daily'] and not data_parts['weekly']:
              print("警告：[Data Prep] 未能成功加载任何日度或周度预测变量数据。将仅使用目标变量。")
              # Allow proceeding with only the target
@@ -353,14 +462,14 @@ def prepare_data(excel_path: str, target_freq: str, target_sheet_name: str, targ
             all_loaded_indices.append(target_series_weekly.index) # 使用对齐后的目标索引
         else:
             print("错误：[Data Prep] 未能从原始目标数据中生成任何有效的周度对齐数据点。")
-            return None
+            return None, None
         # --- 结束步骤 2c ---
 
         # --- 步骤 3: 最终合并所有处理过的数据 ---
         print("\n--- [Data Prep] 步骤 3: 最终合并所有处理过的数据 ---")
         if not processed_parts:
             print("错误：[Data Prep] 没有成功处理的数据部分可以合并。")
-            return None
+            return None, None
 
         # 合并所有周度数据
         combined_data = pd.concat(processed_parts, axis=1)
@@ -380,22 +489,17 @@ def prepare_data(excel_path: str, target_freq: str, target_sheet_name: str, targ
             print(f"  确定的完整日期范围: {min_date.date()} 到 {max_date.date()} (频率: {target_freq})")
         else:
             print("错误: 无法确定日期范围，因为没有加载任何有效数据。")
-            return None
+            return None, None
 
         # 重新索引以确保所有数据都在完整的周度网格上
         all_data_aligned_weekly = combined_data.reindex(full_date_range)
         print(f"  重新索引到完整日期范围完成. 最终 Shape: {all_data_aligned_weekly.shape}")
 
-        # --- DEBUG: Check specific variable in final aligned data --- 
-        if '期货结算价(连续):铁矿石' in all_data_aligned_weekly.columns:
-            print(f"  [DEBUG specific] NaN % for '期货结算价(连续):铁矿石' in FINAL aligned data: {all_data_aligned_weekly['期货结算价(连续):铁矿石'].isna().mean():.2%}")
-        # --- END DEBUG ---
-
         # --- 验证目标变量是否存在于最终数据中 --- 
         if target_variable_name not in all_data_aligned_weekly.columns:
             print(f"严重错误: 目标变量 '{target_variable_name}' 在最终对齐的数据中丢失了！")
             print(f"  可用列: {all_data_aligned_weekly.columns.tolist()[:20]}...")
-            return None
+            return None, None
 
         # --- 移除在合并/重采样后可能变成全 NaN 的列 --- 
         initial_final_cols = all_data_aligned_weekly.shape[1]
@@ -406,19 +510,65 @@ def prepare_data(excel_path: str, target_freq: str, target_sheet_name: str, targ
              # 再次验证目标变量
              if target_variable_name not in all_data_aligned_weekly.columns:
                   print(f"严重错误: 目标变量 '{target_variable_name}' 在移除全 NaN 列后丢失了！")
-                  return None
+                  return None, None
 
-        print("\n--- [Data Prep] 数据准备完成 --- ")
-        return all_data_aligned_weekly
+        # --- 新增: 移除连续缺失值过多的变量 (在返回前处理) --- 
+        if all_data_aligned_weekly is not None and consecutive_nan_threshold is not None and consecutive_nan_threshold > 0:
+            print(f"\n--- [Data Prep] (启用) 检查最终对齐数据的连续缺失值 (阈值 >= {consecutive_nan_threshold}) ---")
+            initial_cols_count = all_data_aligned_weekly.shape[1]
+            cols_to_remove = []
+            predictors = [col for col in all_data_aligned_weekly.columns if col != target_variable_name]
+            
+            for col in predictors:
+                series = all_data_aligned_weekly[col]
+                is_na = series.isna()
+                # 计算连续 NaN 块的长度
+                na_blocks = is_na.ne(is_na.shift()).cumsum()[is_na]
+                if not na_blocks.empty:
+                    max_consecutive_nan = na_blocks.value_counts().max()
+                    if max_consecutive_nan >= consecutive_nan_threshold:
+                        cols_to_remove.append(col)
+                        print(f"  标记移除变量: '{col}' (最大连续 NaN: {max_consecutive_nan} >= {consecutive_nan_threshold})")
+            
+            if cols_to_remove:
+                print(f"  正在移除 {len(cols_to_remove)} 个连续缺失值超标的预测变量...")
+                all_data_aligned_weekly = all_data_aligned_weekly.drop(columns=cols_to_remove)
+                print(f"  移除后数据 Shape: {all_data_aligned_weekly.shape}")
+                # 从行业映射中移除这些列 (小写键)
+                removed_keys_count = 0
+                for col_rem in cols_to_remove:
+                    norm_col_rem = str(col_rem).strip().lower()
+                    if norm_col_rem in var_industry_map:
+                        del var_industry_map[norm_col_rem]
+                        removed_keys_count += 1
+                print(f"  已从行业映射中移除 {removed_keys_count} 个对应条目。")
+            else:
+                 print(f"  所有预测变量的连续缺失值均低于阈值 {consecutive_nan_threshold}。无需移除。")
+        elif consecutive_nan_threshold is not None:
+             print(f"\n--- [Data Prep] (跳过) 未执行连续缺失值检查 (阈值: {consecutive_nan_threshold})，因为最终对齐数据为空或阈值无效。---")
+        else:
+             print(f"\n--- [Data Prep] (禁用) 未执行基于连续缺失值的变量移除。---")
+        # --- 结束新增 --- 
+
+        if all_data_aligned_weekly is None or all_data_aligned_weekly.empty:
+            print("错误: [Data Prep] 最终合并和对齐后的数据为空。")
+            return None, None
+
+        print(f"\n--- [Data Prep] 数据准备完成 --- ")
+        print(f"  最终对齐数据 Shape: {all_data_aligned_weekly.shape}")
+        print(f"  目标变量 '{target_variable_name}' 是否存在: {target_variable_name in all_data_aligned_weekly.columns}")
+        print(f"  生成的行业映射数量: {len(var_industry_map)}")
+
+        return all_data_aligned_weekly, var_industry_map
 
     except FileNotFoundError:
         print(f"错误: [Data Prep] Excel 数据文件 {excel_path} 未找到。")
-        return None
+        return None, None
     except Exception as err:
         print(f"错误: [Data Prep] 数据准备过程中发生意外错误: {err}")
         import traceback
         traceback.print_exc()
-        return None
+        return None, None
 
 if __name__ == '__main__':
     # Example usage (optional, for testing the module directly)
@@ -428,7 +578,7 @@ if __name__ == '__main__':
     TARGET_SHEET_TEST = '工业增加值同比增速-月度'
     TARGET_VAR_TEST = '规模以上工业增加值:当月同比'
 
-    prepared_data = prepare_data(excel_path=EXCEL_DATA_FILE_TEST,
+    prepared_data, industry_map = prepare_data(excel_path=EXCEL_DATA_FILE_TEST,
                                  target_freq=TARGET_FREQ_TEST,
                                  target_sheet_name=TARGET_SHEET_TEST,
                                  target_variable_name=TARGET_VAR_TEST)

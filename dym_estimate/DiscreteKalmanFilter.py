@@ -27,7 +27,10 @@ import sklearn
 from sklearn.metrics import mean_squared_error, r2_score
 import statsmodels.api as sm
 from datetime import datetime,timedelta
-import Functions as funcs
+from numpy.random import randn
+from filterpy.kalman import KalmanFilter
+from . import Functions as funcs
+from scipy import linalg
 
 # --- 全局调试标志 ---
 DEBUG_KALMAN = False # 设置为 True 以打印详细的卡尔曼滤波器内部状态

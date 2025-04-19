@@ -1,3 +1,0 @@
---- 开始详细调优日志 (Run: 20250416_113754) ---
-输出目录: C:\Users\able7\Desktop\HFTA\dym_estimate\dfm_result\run_20250416_113754
-配置: 优化目标=平均胜率优先, k_factors其次

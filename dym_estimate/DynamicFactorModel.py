@@ -29,8 +29,9 @@ import statsmodels.api as sm
 from datetime import datetime,timedelta
 from sklearn.decomposition import PCA
 from scipy.interpolate import interp1d
-from DiscreteKalmanFilter import *
-from Functions import *
+from .DiscreteKalmanFilter import *
+from .Functions import *
+from scipy.optimize import minimize
 
 def DFM(observation, n_factors):
     """Performs initial PCA for DFM initialization.
@@ -190,7 +191,7 @@ def DFM_EMalgo(observation, n_factors, n_shocks, n_iter, error='False'):
     # === 修改结束: 基于 PCA 的初始化 ===
 
     # Prepare U (error/shocks term for KF)
-    if error=='True':
+    if error:
         u_data = rand_Matrix(len(observation.index), n_shocks)
     else:
         u_data = np.zeros(shape=(len(observation.index), n_shocks))
@@ -199,59 +200,12 @@ def DFM_EMalgo(observation, n_factors, n_shocks, n_iter, error='False'):
     # --- Start EM Loop ---
     # print(f"Step 3: Starting EM loop for {n_iter} iterations...") # 注释掉
     for i in range(n_iter):
-        # print(f"\\n--- Iteration {i+1}/{n_iter} ---") # <<--- COMMENTED OUT
-        # print(f"  Current R diagonal: {np.diag(R_current)}") # Keep commented for brevity
-        # print(f"  Current Q diagonal: {np.diag(Q_current)}") # Keep commented for brevity
-
         # E-Step: Run Kalman Filter and Smoother
-        # --- REMOVE DEBUG CHECKS --- 
-        # if np.isnan(A_current).any(): print(f"  [DEBUG Iter {i+1}] Input A contains NaN!")
-        # if np.isnan(B_current).any(): print(f"  [DEBUG Iter {i+1}] Input B contains NaN!")
-        # if np.isnan(Lambda_current).any(): print(f"  [DEBUG Iter {i+1}] Input Lambda contains NaN!")
-        # if np.isnan(x0_current).any(): print(f"  [DEBUG Iter {i+1}] Input x0 contains NaN!")
-        # if np.isnan(P0_current).any(): print(f"  [DEBUG Iter {i+1}] Input P0 contains NaN!")
-        # if np.isnan(Q_current).any(): print(f"  [DEBUG Iter {i+1}] Input Q contains NaN!")
-        # if np.isnan(R_current).any(): print(f"  [DEBUG Iter {i+1}] Input R contains NaN!")
-        # --- END REMOVE DEBUG CHECKS --- 
         kf = KalmanFilter(Z=obs_centered, U=error_df, A=A_current, B=B_current, H=Lambda_current, state_names=state_names, x0=x0_current, P0=P0_current, Q=Q_current, R=R_current)
         fis = FIS(kf)
 
-        # --- REMOVE DEBUG CHECKS --- 
-        # if isinstance(kf.x, pd.DataFrame) and kf.x.isnull().values.any(): 
-        #      print(f"  [DEBUG Iter {i+1}] Filtered state kf.x contains NaN!")
-        # elif isinstance(kf.x, np.ndarray) and np.isnan(kf.x).any():
-        #      print(f"  [DEBUG Iter {i+1}] Filtered state kf.x contains NaN! Count: {np.isnan(kf.x).sum()}")
-        # if np.isnan(kf.P).any(): print(f"  [DEBUG Iter {i+1}] Filtered cov kf.P contains NaN! Count: {np.isnan(kf.P).sum()}")
-        # if np.isinf(kf.P).any(): print(f"  [DEBUG Iter {i+1}] Filtered cov kf.P contains Inf! Count: {np.isinf(kf.P).sum()}")
-        # if isinstance(fis.x_sm, pd.DataFrame) and fis.x_sm.isnull().values.any(): 
-        #      print(f"  [DEBUG Iter {i+1}] Smoothed state fis.x_sm contains NaN!")
-        # elif isinstance(fis.x_sm, np.ndarray) and np.isnan(fis.x_sm).any():
-        #      print(f"  [DEBUG Iter {i+1}] Smoothed state fis.x_sm contains NaN! Count: {np.isnan(fis.x_sm).sum()}")
-        # if np.isnan(fis.P_sm).any(): print(f"  [DEBUG Iter {i+1}] Smoothed cov fis.P_sm contains NaN! Count: {np.isnan(fis.P_sm).sum()}")
-        # if np.isinf(fis.P_sm).any(): print(f"  [DEBUG Iter {i+1}] Smoothed cov fis.P_sm contains Inf! Count: {np.isinf(fis.P_sm).sum()}")
-        # --- END REMOVE DEBUG CHECKS --- 
-
-        # --- Add Check for NaNs in Smoothed Factors (Redundant but safe) --- KEEP THIS CHECK
-        if isinstance(fis.x_sm, pd.DataFrame) and fis.x_sm.isnull().values.any():
-             print(f"\nError: NaNs detected in smoothed factors (fis.x_sm) during E-step iteration {i+1}. Stopping EM algorithm.")
-             print("This might indicate numerical instability in the Kalman Filter/Smoother.")
-             raise ValueError(f"NaNs found in smoothed factors at iteration {i+1}")
-        elif isinstance(fis.x_sm, np.ndarray) and np.isnan(fis.x_sm).any():
-             print(f"\nError: NaNs detected in smoothed factors (fis.x_sm) during E-step iteration {i+1}. Stopping EM algorithm.")
-             print("This might indicate numerical instability in the Kalman Filter/Smoother.")
-             raise ValueError(f"NaNs found in smoothed factors at iteration {i+1}")
-        # --- End Check ---
-
         # M-Step: Update parameters using smoothed factors
         em = EMstep(fis, n_shocks) # Should return arrays
-
-        # --- REMOVE DEBUG CHECKS --- 
-        # if np.isnan(em.A).any(): print(f"  [DEBUG Iter {i+1}] M-Step output em.A contains NaN!")
-        # if np.isnan(em.B).any(): print(f"  [DEBUG Iter {i+1}] M-Step output em.B contains NaN!")
-        # if np.isnan(em.Lambda).any(): print(f"  [DEBUG Iter {i+1}] M-Step output em.Lambda contains NaN!")
-        # if np.isnan(em.Q).any(): print(f"  [DEBUG Iter {i+1}] M-Step output em.Q contains NaN!")
-        # if np.isnan(em.R).any(): print(f"  [DEBUG Iter {i+1}] M-Step output em.R contains NaN!")
-        # --- END REMOVE DEBUG CHECKS --- 
 
         # Update parameters for next iteration
         A_current = np.array(em.A)
@@ -268,20 +222,6 @@ def DFM_EMalgo(observation, n_factors, n_shocks, n_iter, error='False'):
     # print("Running final Kalman Filter with optimized parameters...") # 注释掉：减少输出
     kf_final = KalmanFilter(Z=obs_centered, U=error_df, A=A_current, B=B_current, H=Lambda_current, state_names=state_names, x0=x0_current, P0=P0_current, Q=Q_current, R=R_current)
     
-    # --- REMOVE DEBUG CHECKS --- 
-    final_x_sm_to_return = em.x_sm # Get the object that will be returned
-    # print(f"\n[DEBUG DFM Return] Preparing to return x_sm. Object ID: {id(final_x_sm_to_return)}") # REMOVED
-    # if isinstance(final_x_sm_to_return, pd.DataFrame):
-    #     print(f"[DEBUG DFM Return] NaN check before return:\n{final_x_sm_to_return.isnull().sum()}") # REMOVED
-    #     if final_x_sm_to_return.isnull().values.any():
-    #          print("!!! [DEBUG DFM Return] WARNING: Final x_sm contains NaN before return!!!") # REMOVED
-    # elif isinstance(final_x_sm_to_return, np.ndarray):
-    #     nan_count = np.isnan(final_x_sm_to_return).sum()
-    #     print(f"[DEBUG DFM Return] NaN check before return. Count: {nan_count}") # REMOVED
-    #     if nan_count > 0:
-    #          print("!!! [DEBUG DFM Return] WARNING: Final x_sm contains NaN before return!!!") # REMOVED
-    # --- END REMOVE DEBUG CHECKS ---
-
     # The smoothed state `x_sm` is from the last M-step's input (`em.x_sm`)
     final_x_sm_to_return = em.x_sm 
 
