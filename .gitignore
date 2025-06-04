@@ -4,9 +4,6 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Output directories
-dym_estimate/dfm_result/
-
 # Data files (Consider alternatives for large/sensitive data)
 # data/* 
 # data/经济数据库.xlsx

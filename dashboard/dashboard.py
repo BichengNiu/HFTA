@@ -1,118 +1,259 @@
+# -*- coding: utf-8 -*-
+"""
+经济运行数据分析平台 - 主dashboard
+"""
+
+# 🔥 第一步：环境变量级别抑制（在所有导入之前）
+import os
+import sys
+
+# 🔥 设置环境变量完全禁用Streamlit日志和警告
+os.environ['STREAMLIT_LOGGER_LEVEL'] = 'CRITICAL'
+os.environ['STREAMLIT_CLIENT_TOOLBAR_MODE'] = 'minimal' 
+os.environ['STREAMLIT_BROWSER_GATHER_USAGE_STATS'] = 'false'
+os.environ['STREAMLIT_CLIENT_SHOW_ERROR_DETAILS'] = 'false'
+
+# 🔥 Python日志级别设置
+os.environ['PYTHONWARNINGS'] = 'ignore'
+
+# 立即抑制所有警告（在任何其他导入之前）
+import warnings
+import logging
+
+# 设置Python根日志级别
+logging.getLogger().setLevel(logging.CRITICAL)
+
+# 立即抑制ScriptRunContext警告
+warnings.filterwarnings("ignore")  # 抑制所有警告
+warnings.filterwarnings("ignore", message=".*missing ScriptRunContext.*")
+warnings.filterwarnings("ignore", message=".*ScriptRunContext.*") 
+warnings.filterwarnings("ignore", category=UserWarning, module="streamlit")
+warnings.filterwarnings("ignore", category=UserWarning, module="streamlit.runtime")
+
+# 立即设置日志级别
+for logger_name in ["", "root", "streamlit", "streamlit.runtime", "streamlit.runtime.scriptrunner_utils"]:
+    logging.getLogger(logger_name).setLevel(logging.CRITICAL)
+    logging.getLogger(logger_name).disabled = True
+
+# 获取dashboard目录路径
+current_dir = os.path.dirname(__file__)
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# 🔥 第二步：路径设置
+
+# 🔥 第三步：增强警告抑制设置（在导入streamlit之前）
+try:
+    # 🔥 强化基础警告抑制
+    warnings.filterwarnings("ignore", category=UserWarning, module="streamlit.*")
+    warnings.filterwarnings("ignore", message=".*missing ScriptRunContext.*")
+    warnings.filterwarnings("ignore", message=".*ScriptRunContext.*")
+    warnings.filterwarnings("ignore", message=".*No runtime found.*")
+    warnings.filterwarnings("ignore", message=".*Session state does not function.*")
+    warnings.filterwarnings("ignore", message=".*to view a Streamlit app.*")
+    
+    # 🔥 设置所有相关日志级别为CRITICAL
+    loggers_to_silence = [
+        "streamlit",
+        "streamlit.runtime", 
+        "streamlit.runtime.scriptrunner_utils",
+        "streamlit.runtime.scriptrunner_utils.script_run_context",
+        "streamlit.runtime.caching",
+        "streamlit.runtime.caching.cache_data_api",
+        "streamlit.runtime.state",
+        "streamlit.runtime.state.session_state_proxy"
+    ]
+    
+    for logger_name in loggers_to_silence:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.CRITICAL)
+        logger.propagate = False
+    
+    # 🔥 尝试导入并执行自定义的警告抑制
+    try:
+        from suppress_streamlit_warnings import suppress_streamlit_warnings
+        # suppress_streamlit_warnings() 已在模块导入时自动执行
+    except ImportError:
+        pass  # 基础抑制已经设置
+        
+except Exception as e:
+    pass  # 静默处理警告抑制错误
+
+# 🔥 第四步：导入Streamlit（警告已被抑制）
 import streamlit as st
+
+# 🔥 第五步：页面配置（必须是第一个Streamlit命令）
+st.set_page_config(
+    page_title="经济运行数据分析平台",
+    layout="wide"
+)
+
+# 其他导入放在 set_page_config 之后
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
+# Remove unused plotting imports if they aren't needed elsewhere
+# import plotly.graph_objects as go
+# import plotly.express as px
 from datetime import datetime, timedelta
 import os
 import warnings
-from statsmodels.tsa.stattools import adfuller
-import io # Added for Excel download
+# Remove adfuller if only used in stationarity tab
+# from statsmodels.tsa.stattools import adfuller 
+# Remove io if only used in stationarity tab
+# import io 
+import re # Keep for regex
+import sys # <<< 新增
+import subprocess # <<< 新增
+import shutil # <<< 新增
+import logging
+import altair as alt # Added import for Altair
+# from PIL import Image # <<< REMOVED IMPORT FOR PILLOW
+
+# Attempt to enable VegaFusion for Altair to handle larger datasets
+try:
+    alt.data_transformers.enable("vegafusion")
+    # print("[Dashboard Startup] Successfully enabled Altair VegaFusion data transformer.") # 移除以减少重复日志
+except ImportError:
+    # print("[Dashboard Startup] WARNING: VegaFusion not available or import failed. Altair might struggle with large datasets.") # 移除以减少重复日志
+    # Optionally, fall back to a different transformer or do nothing
+    # alt.data_transformers.enable('json') # Default, but might be slow for large data
+    pass
+
+# --- Add NDRC Logo to Sidebar ---
+# st.sidebar.image("dashboard/image/国家发改委图标.png", use_column_width='always') # <<< COMMENTED OUT
+
+# --- Display New Icon at the top of the Sidebar ---
+# st.sidebar.image("dashboard/image/图标.png", use_column_width='always') # <<< COMMENTED OUT THIS ICON AS WELL
+
+# --- Sidebar Title ---
+st.sidebar.title("📈 经济运行数据分析平台") # <<< RE-ADDED THE CHART ICON
+
+# --- Initialize Session State ---
+# (Moved session state initialization higher, after sidebar title but before other UI elements)
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = None
+
+# --- <<< 新增：将项目根目录添加到 sys.path >>> ---
+# 获取当前脚本 (dashboard.py) 所在的目录
+current_dir = os.path.dirname(__file__)
+# 获取项目根目录 (dashboard 目录的上级目录)
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+# 如果项目根目录不在 sys.path 中，则添加它
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    print(f"[Dashboard Startup] Added project root to sys.path: {project_root}")
+
+import sys # Ensure sys is imported if not already for the debug print
+# print("DEBUG SYS.PATH in dashboard.py:", sys.path) # <<< DEBUG PRINT 移除以减少控制台噪音
+
+# --- <<< 新增：也尝试添加 dashboard 目录本身到 sys.path >>> ---
+# if current_dir not in sys.path:
+#     sys.path.insert(0, current_dir)
+#     print(f"[Dashboard Startup] Added dashboard directory to sys.path: {current_dir}")
+# --- <<< 结束新增 >>> ---
+
+# --- 配置导入处理 ---
+try:
+    # 尝试导入本地配置（如果存在）
+    # import config as local_config
+    # print(f"[Dashboard Startup] Successfully imported local config")
+    pass  # 暂时不导入任何配置
+except ImportError as e:
+    # 如果没有配置文件，使用默认设置
+    print(f"[Dashboard Startup] 使用默认配置设置")
+    pass
+
+# --- 移除：不再需要直接导入后端函数，由前端模块处理 ---
+# 新闻分析相关导入已移至 news_analysis_front_end.py 模块中
 
 # 从重构的脚本中导入核心函数
-from data_loader import load_and_process_data
-# Import the main calculation function and updated default values
-from industry_diffusion_calculator import (
-    calculate_all_diffusion_indices, 
-    DEFAULT_MISSING_THRESHOLD, # Now defaults to 0.3
-    DEFAULT_TOLERANCE_THRESHOLD
-)
-# Import BOTH summary functions
-from growth_calculator import calculate_weekly_summary, calculate_monthly_growth_summary, calculate_weekly_growth_summary
-# 导入新的绘图工具
-from plotting_utils import calculate_historical_weekly_stats, plot_weekly_indicator, plot_monthly_indicator
+# --- Revert imports from shared_utils --- 
+from preview.data_loader import load_and_process_data
+# Keep monthly summary import for pre-calculation
+from preview.growth_calculator import calculate_monthly_growth_summary
+# --- End Revert imports ---
+# Remove unused growth functions if not needed elsewhere
+# from growth_calculator import calculate_weekly_summary, calculate_weekly_growth_summary
+# Remove unused plotting utils if not needed elsewhere
+# from dashboard.preview.plotting_utils import calculate_historical_weekly_stats, plot_weekly_indicator, plot_monthly_indicator
+from preview.industrial_data_tab import display_industrial_tabs # <<< 新增导入
 
-# --- Helper Function for Stationarity Test ---
-def _run_adf(series, alpha):
-    """Helper to run ADF test and return p-value and status ('是', '否', '数据不足', '测试出错')."""
-    series = series.dropna()
-    if len(series) < 4:
-        return np.nan, '数据不足'
+# 导入所有 Tab 模块
+from preview.weekly_data_tab import display_weekly_tab
+from preview.monthly_data_tab import display_monthly_tab
+from DFM.model_analysis.dfm_ui import render_dfm_tab 
+from DFM.data_prep.data_prep_ui import render_dfm_data_prep_tab # <<< 新增：从新路径导入
+from DFM.train_model.train_model_ui import render_dfm_train_model_tab # <<< 新增模型训练模块导入
+# 延迟导入新闻分析模块，避免重复导入打印
+# from DFM.news_analysis.news_analysis_front_end import render_news_analysis_tab # <<< 改为延迟导入
+from preview.diffusion_analysis import display_diffusion_tab
+# --- 更新：工具类模块导入路径 ---
+from tools.time_series_pretreat.time_series_clean.time_series_clean_tab import display_time_series_tool_tab # <<< 更正路径
+from tools.time_series_pretreat.time_series_compute.time_series_compute_tab import display_time_series_compute_tab # <<< 更正路径
+
+# --- 更新：平稳性分析模块导入路径 ---
+from tools.time_series_property.stationarity_frontend import display_stationarity_tab # <<< 更正路径
+
+# --- 更新：时间序列性质分析模块导入路径 ---
+from tools.time_series_property.win_rate_frontend import display_win_rate_tab
+from tools.time_series_property.dtw_frontend import display_dtw_tab
+from tools.time_series_property.time_lag_corr_frontend import display_time_lag_corr_tab
+# from tools.time_series_property.kl_divergence_frontend import display_kl_divergence_analysis # <<< 注释掉旧的K-L单独导入
+from tools.time_series_property.combined_lead_lag_frontend import display_combined_lead_lag_analysis_tab # <<< 新增综合分析前端导入
+# --- 结束更新 ---
+
+# --- 新增：数据合并与导出功能导入 (路径待确认或函数已整合) ---
+# from dashboard.tools.time_series_clean_mod.ui_components.merge_data_ui import display_merge_operations # <<< 此文件已删除，旧路径注释
+# 假设 display_merge_operations 现在可能在 time_series_clean_tab.py 或其子模块中，或者有新名称
+# 暂时不导入，后续根据用户提供信息或报错来添加
+# from tools.time_series_pretreat.time_series_clean.ui_components.merge_data_ui import display_merge_operations # <<< 移除此行
+
+# --- 新增：通用侧边栏组件导入 ---
+from tools.time_series_pretreat.time_series_clean.ui_components.sidebar_ui import display_staged_data_sidebar
+from tools.time_series_pretreat.time_series_clean.ui_components.data_comparison_ui import render_data_comparison_ui # <<< 新增数据比较UI导入
+# --- 结束更新 ---
+
+# --- Helper Function for Extracting Industry Name ---
+def extract_industry_name(source_string: str) -> str:
+    """
+    从 '文件名|工作表名' 格式的字符串中提取核心行业名称。
+    例如: '经济数据库0424_带数据源标志|化学化工_周度_Mysteel' -> '化学化工'
+          '经济数据库0424_带数据源标志|工业增加值同比增速_月度_同花顺' -> '工业增加值同比增速'
+          '经济数据库0424_带数据源标志|钢铁_日度_Wind' -> '钢铁'
+    """
     try:
-        result = adfuller(series)
-        p_value = result[1]
-        # STRICT comparison with the passed alpha
-        is_stationary = p_value <= alpha 
-        status = '是' if is_stationary else '否'
-        return p_value, status
+        # 分割文件名和工作表名
+        parts = source_string.split('|')
+        if len(parts) < 2:
+            # 如果格式不符，尝试直接清理整个字符串
+            sheet_name_part = source_string 
+        else:
+            sheet_name_part = parts[1] # 取工作表名部分
+
+        # 使用正则表达式查找常见的行业名称模式 (中文 + 可选英文/数字)
+        # 或者，更简单地，按 '_' 分割并取第一个非空的有意义部分
+        
+        # 方案：按 '_' 分割，取第一个包含中文字符的部分
+        sub_parts = sheet_name_part.split('_')
+        for part in sub_parts:
+            if re.search(r'[\u4e00-\u9fff]+', part): # 检查是否包含中文字符
+                # 移除常见的后缀 (如 '行业', '产业' 等，如果需要的话)
+                # part = re.sub(r'(行业|产业)$', '', part) 
+                return part.strip() # 返回第一个有中文的部分
+        
+        # 如果上面没找到，尝试返回分割后的第一部分（可能不含中文）
+        if sub_parts:
+             first_part = sub_parts[0].strip()
+             if first_part: # 确保不是空字符串
+                 return first_part
+
+        # 如果完全无法解析，返回原始工作表名部分或整个字符串
+        return sheet_name_part.strip() if sheet_name_part else source_string.strip()
+
     except Exception as e:
-        return np.nan, f'测试出错'
-
-def test_and_process_stationarity(df, alpha=0.05):
-    """Performs ADF test, attempts various transformations, returns summary & processed data."""
-    summary_results = []
-    processed_data = {}
-
-    for name, series in df.items():
-        series_cleaned = series.dropna()
-        
-        original_p_value, original_status = _run_adf(series_cleaned, alpha)
-        
-        processed_p_value = np.nan
-        final_status = original_status # Start assuming original status is the final one
-        method = '原始序列'
-        processed_series = series_cleaned 
-
-        if original_status == '是':
-            processed_p_value = original_p_value # P-value when original is stationary
-            # No transformation needed, final_status remains '是'
-            pass
-        elif original_status == '否': # Only try transformations if original is definitively non-stationary
-            can_log = (series_cleaned > 0).all() and len(series_cleaned) > 0
-            found_stationary_method = None
-
-            transformations = []
-            if can_log: transformations.append(('对数变换', np.log(series_cleaned)))
-            transformations.append(('一阶差分', series_cleaned.diff()))
-            if can_log:
-                 # Ensure log series exists for log diff
-                log_series_for_diff = np.log(series_cleaned) if 'series_log' not in locals() else series_log
-                transformations.append(('对数一阶差分', log_series_for_diff.diff()))
-            transformations.append(('二阶差分', series_cleaned.diff().diff()))
-
-            for m, transformed_series in transformations:
-                p_val, status = _run_adf(transformed_series, alpha)
-                if status == '是':
-                    method = m
-                    final_status = '是'
-                    processed_p_value = p_val
-                    processed_series = transformed_series.dropna() # Use the transformed series
-                    found_stationary_method = m
-                    break # Stop trying further transformations
-            
-            # If no transformation worked, final status remains '否'
-            if not found_stationary_method:
-                 method = '无有效方法' # Mark that no method worked
-                 final_status = '否' # Explicitly set to No if original was No and nothing worked
-                 processed_p_value = np.nan # No p-value resulted in stationarity
-                 processed_series = series_cleaned # Revert to original
-
-        # Final adjustments before appending
-        # Ensure '处理后P值' is NaN if the method is '原始序列' or '无有效方法'
-        p_value_to_report = processed_p_value if method not in ['原始序列', '无有效方法'] and final_status == '是' else np.nan
-        
-        summary_results.append({
-            '指标名称': name,
-            '原始P值': original_p_value,
-            '原始是否平稳': original_status,
-            '处理方法': method,
-            '处理后P值': p_value_to_report, # Report p-value only if processed AND stationary
-            '最终是否平稳': final_status
-        })
-        processed_data[name] = processed_series.dropna() # Ensure final processed data has no NaNs from processing
-
-    summary_df = pd.DataFrame(summary_results)
-    # Use outer join for concat to handle different lengths/indices after processing
-    processed_df = pd.concat(processed_data, axis=1, join='outer') 
-
-    return summary_df, processed_df
-
-# --- Streamlit Page Configuration ---
-st.set_page_config(
-    page_title="高频数据洞察平台",
-    page_icon="📈",
-    layout="wide"
-)
+        print(f"Error extracting industry name from '{source_string}': {e}")
+        return source_string # Fallback to original string on error
 
 # --- Custom CSS for Color Theme and Cursor ---
 st.markdown("""
@@ -131,11 +272,14 @@ st.markdown("""
 [data-testid="stSidebar"] label,
 [data-testid="stSidebar"] .stMarkdown,
 [data-testid="stSidebar"] .stButton>button, /* Button text in sidebar */
-[data-testid="stSidebar"] .stFileUploader label {{ /* Uploader label */
-    color: #f0f0f0 !important;
-}}
-[data-testid="stSidebar"] .st-emotion-cache-16txtl3 {{ color: #f0f0f0 !important; }} /* Headers */
-[data-testid="stSidebar"] .st-emotion-cache-1zhivh4 {{ color: #d0d0d0 !important; }} /* Regular text */
+[data-testid="stSidebar"] .stFileUploader label, /* Uploader label */
+/* Target success/info message text in sidebar */
+[data-testid="stSidebar"] [data-testid="stAlert"] div[role="alert"] {
+    color: white !important; /* Force text color to white */
+}
+/* General sidebar text color fallback */
+[data-testid="stSidebar"] .st-emotion-cache-16txtl3 { color: #f0f0f0 !important; } /* Headers */
+[data-testid="stSidebar"] .st-emotion-cache-1zhivh4 { color: #d0d0d0 !important; } /* Regular text */
 [data-testid="stSidebar"] .st-emotion-cache-15txusw {{ color: #d0d0d0 !important; }} /* Uploader text */
 
 /* Main App Area */
@@ -147,7 +291,7 @@ div[data-testid="stAppViewContainer"] > section {{ /* Target main section */
     background-color: #36454F; 
 }}
 /* Ensure main area text elements are light */
-h1, h2, h3, h4, h5, h6, p, label, .stMarkdown, .stAlert>div, .stSelectbox label, .stExpander header {{ 
+h1, h2, h3, h4, h5, h6, p, label, .stMarkdown, .stAlert>div, .stSelectbox label, .stExpander header {{
     color: #f0f0f0 !important; 
 }}
 /* Tables */
@@ -232,753 +376,533 @@ div[data-testid="stSelectbox"] div[data-baseweb="select"] {{
     cursor: pointer !important; 
 }}
 
+/* --- <<< 新增：侧边栏暂存区按钮样式 >>> --- */
+/* 针对侧边栏展开项内的下载按钮 */
+[data-testid="stSidebar"] [data-testid="stExpander"] .stDownloadButton button {
+    background-color: #28a745 !important; /* 绿色背景 */
+    color: white !important;              /* 白色文字 */
+    border: none !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] .stDownloadButton button:hover {
+    background-color: #218838 !important; /* 深一点的绿色 */
+}
+
+/* 针对侧边栏展开项内的普通按钮 (假设删除按钮是普通按钮) */
+/* 注意：可能需要根据实际渲染出的类名或属性调整选择器 */
+[data-testid="stSidebar"] [data-testid="stExpander"] .stButton button {
+    background-color: #dc3545 !important; /* 红色背景 */
+    color: white !important;              /* 白色文字 */
+    border: none !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] .stButton button:hover {
+    background-color: #c82333 !important; /* 深一点的红色 */
+}
+/* --- <<< 结束新增 >>> --- */
+
 .uploadedFile {{cursor: default !important;}}
 </style>
 """, unsafe_allow_html=True)
 
-# --- Callback Functions for Sliders ---
-def request_di_recalculation():
-    st.session_state.di_recalculation_needed = True
+# --- Module Configuration (NEW) ---
+MODULE_CONFIG = {
+    "数据预览": {
+        "工业": None,
+        "消费": None,
+        # 可以根据需要添加更多领域，例如农业、服务业等
+    },
+    "行业分析": {
+        "占位": None 
+    },
+    "模型分析": {
+        "DFM 模型": ["数据准备", "模型训练", "模型结果分析", "新闻分析"], # <<< 修改：增加"模型训练"
+        "其他模型 (占位)": None 
+    },
+    "应用工具": {
+        "数据预处理": ["数据清洗", "变量计算", "数据追加与合并", "数据比较"], # <--- 修改此处，增加"数据比较"
+        "数据探索": ["平稳性分析", "相关性分析", "领先滞后分析"]
+    }
+}
 
-# --- Sidebar --- 
+# --- Sidebar ---
 with st.sidebar:
-    st.title("📈 高频数据洞察平台")
-    st.subheader("上传数据文件")
-    uploaded_files = st.file_uploader(
-        "拖放或选择 Excel 文件",
-        type=["xlsx"],
-        accept_multiple_files=True, 
+    # --- Initialize Session State for Navigation and DFM files ---
+    if 'selected_main_module' not in st.session_state:
+        st.session_state.selected_main_module = list(MODULE_CONFIG.keys())[0]
+    if 'selected_sub_module' not in st.session_state:
+        st.session_state.selected_sub_module = None
+
+    # For resetting data import UI elements across relevant modules
+    st.session_state.setdefault('data_import_reset_counter', 0)
+
+    # DFM file states (ensure they are initialized if not already)
+    if 'dfm_model_file_indep' not in st.session_state: st.session_state.dfm_model_file_indep = None
+    if 'dfm_metadata_file_indep' not in st.session_state: st.session_state.dfm_metadata_file_indep = None
+    # if 'dfm_data_file_indep' not in st.session_state: st.session_state.dfm_data_file_indep = None # <--- 移除相关数据会话状态初始化
+
+    # --- Session states for "数据预览" data ---
+    if 'preview_data_loaded_files' not in st.session_state: st.session_state.preview_data_loaded_files = None
+    if 'preview_weekly_df' not in st.session_state: st.session_state.preview_weekly_df = pd.DataFrame()
+    if 'preview_monthly_df' not in st.session_state: st.session_state.preview_monthly_df = pd.DataFrame()
+    if 'preview_source_map' not in st.session_state: st.session_state.preview_source_map = {}
+    if 'preview_indicator_industry_map' not in st.session_state: st.session_state.preview_indicator_industry_map = {}
+    # Add other preview-specific states if needed
+
+    # --- Session states for "应用工具" (examples) ---
+    if 'ts_tool_uploaded_file' not in st.session_state: st.session_state.ts_tool_uploaded_file = None # For 数据清洗
+    if 'stationarity_uploaded_file_tool' not in st.session_state: st.session_state.stationarity_uploaded_file_tool = None # For 平稳性分析
+
+
+    # --- Main Module Selection ---
+    st.subheader("选择功能模块") 
+    main_module_options = list(MODULE_CONFIG.keys())
+    try:
+        current_main_module_index = main_module_options.index(st.session_state.selected_main_module)
+    except ValueError: # Should not happen if initialized
+        current_main_module_index = 0
+        st.session_state.selected_main_module = main_module_options[0]
+
+    selected_main_module_val = st.radio(
+        "主模块:",
+        main_module_options,
+        index=current_main_module_index,
+        key='main_module_radio_selector', # Unique key
         label_visibility="collapsed"
     )
+    
+    if selected_main_module_val != st.session_state.selected_main_module:
+        st.session_state.selected_main_module = selected_main_module_val
+        st.session_state.selected_sub_module = None # Reset sub-module choice
+        # ❌ 移除这个rerun，Streamlit会自动重新渲染
+        # st.rerun() # MODIFIED: Was st.experimental_rerun()
 
-    # Session State Initialization
-    if 'data_loaded' not in st.session_state: st.session_state.data_loaded = False
-    if 'weekly_df' not in st.session_state: st.session_state.weekly_df = pd.DataFrame()
-    if 'monthly_df' not in st.session_state: st.session_state.monthly_df = pd.DataFrame()
-    if 'source_map' not in st.session_state: st.session_state.source_map = {}
-    if 'wow_di' not in st.session_state: st.session_state.wow_di = pd.DataFrame()
-    if 'yoy_di' not in st.session_state: st.session_state.yoy_di = pd.DataFrame()
-    if 'mix_di' not in st.session_state: st.session_state.mix_di = pd.DataFrame()
-    if 'industries' not in st.session_state: st.session_state.industries = []
-    if 'weekly_summary_cache' not in st.session_state: st.session_state.weekly_summary_cache = {}
-    if 'processed_files' not in st.session_state: st.session_state.processed_files = []
-    # Initialize master threshold values (DEFAULT_MISSING_THRESHOLD is now 0.3)
-    if 'tolerance_threshold' not in st.session_state: st.session_state.tolerance_threshold = DEFAULT_TOLERANCE_THRESHOLD
-    if 'missing_threshold' not in st.session_state: st.session_state.missing_threshold = DEFAULT_MISSING_THRESHOLD
-    # Initialize the keys associated with the sliders (use updated default for missing)
-    if 'tolerance_slider_tab3' not in st.session_state: st.session_state.tolerance_slider_tab3 = st.session_state.tolerance_threshold
-    if 'missing_slider_tab3' not in st.session_state: st.session_state.missing_slider_tab3 = st.session_state.missing_threshold # Will be 0.3 initially
-    # Initialize recalculation flag
-    if 'di_recalculation_needed' not in st.session_state: st.session_state.di_recalculation_needed = False 
-    # Add keys for stationarity results
-    if 'adf_results_monthly' not in st.session_state: st.session_state.adf_results_monthly = pd.DataFrame()
-    if 'adf_results_weekly' not in st.session_state: st.session_state.adf_results_weekly = pd.DataFrame()
-    if 'processed_monthly_df' not in st.session_state: st.session_state.processed_monthly_df = pd.DataFrame()
-    if 'processed_weekly_df' not in st.session_state: st.session_state.processed_weekly_df = pd.DataFrame()
-
-    # --- Data Loading and Processing Logic --- 
-    # This part remains, setting di_recalculation_needed on new data load
-    if uploaded_files:
-        uploaded_file_names = sorted([f.name for f in uploaded_files])
-        if not st.session_state.data_loaded or st.session_state.processed_files != uploaded_file_names:
-            with st.spinner('正在加载和处理上传的文件...'):
-                try:
-                    weekly_df, monthly_df, source_map = load_and_process_data(uploaded_files)
-                    st.session_state.weekly_df = weekly_df
-                    st.session_state.monthly_df = monthly_df
-                    st.session_state.source_map = source_map
-                    st.session_state.data_loaded = True
-                    st.session_state.industries = sorted(list(set(source_map.values()))) if source_map else []
-                    st.session_state.processed_files = uploaded_file_names 
-                    st.session_state.weekly_summary_cache = {} 
-                    # Clear stationarity results on new data load
-                    st.session_state.adf_results_monthly = pd.DataFrame()
-                    st.session_state.adf_results_weekly = pd.DataFrame()
-                    st.session_state.processed_monthly_df = pd.DataFrame()
-                    st.session_state.processed_weekly_df = pd.DataFrame()
-                    st.success(f"成功处理 {len(uploaded_files)} 个文件！")
-                    st.info(f"周度数据: {weekly_df.shape[0]} 行, {weekly_df.shape[1]} 列")
-                    st.info(f"月度数据: {monthly_df.shape[0]} 行, {monthly_df.shape[1]} 列")
-                    st.info(f"识别到 {len(st.session_state.industries)} 个行业")
-                    st.session_state.di_recalculation_needed = True 
-                except Exception as e:
-                    st.error(f"处理文件时出错: {e}")
-                    st.session_state.data_loaded = False
-                    st.session_state.weekly_df = pd.DataFrame()
-                    st.session_state.monthly_df = pd.DataFrame()
-                    st.session_state.source_map = {}
-                    st.session_state.industries = []
-                    st.session_state.wow_di = pd.DataFrame()
-                    st.session_state.yoy_di = pd.DataFrame()
-                    st.session_state.mix_di = pd.DataFrame()
-                    st.session_state.processed_files = []
-                    st.session_state.weekly_summary_cache = {}
-                    st.session_state.adf_results_monthly = pd.DataFrame()
-                    st.session_state.adf_results_weekly = pd.DataFrame()
-                    st.session_state.processed_monthly_df = pd.DataFrame()
-                    st.session_state.processed_weekly_df = pd.DataFrame()
-
-    # Removed the recalculation check block that was dependent on sidebar sliders
-    # if st.session_state.data_loaded and (
-    #     st.session_state.prev_tolerance != tolerance_threshold or 
-    #     st.session_state.prev_missing != missing_threshold or 
-    #     recalculate_di # This check is now handled outside the sidebar
-    #    ): ...
-
-# --- Recalculate Diffusion Indices (if needed) ---
-# This block runs after sidebar processing and before tabs are drawn
-if st.session_state.data_loaded and st.session_state.get('di_recalculation_needed', False):
-    if not st.session_state.weekly_df.empty and st.session_state.source_map:
-        current_tolerance = st.session_state.tolerance_slider_tab3
-        current_missing = st.session_state.missing_slider_tab3 # This value is now unified
-
-        st.session_state.tolerance_threshold = current_tolerance
-        st.session_state.missing_threshold = current_missing
+    # --- Sub-Module Selection (conditional) ---
+    sub_config = MODULE_CONFIG[st.session_state.selected_main_module]
+    if isinstance(sub_config, dict): # This main module has sub-modules
+        sub_module_options = list(sub_config.keys())
         
-        with st.spinner(f'正在计算/重新计算扩散指数 (Tol={current_tolerance:.3f}, Miss={current_missing:.2f})...'):
-            try:
-                st.session_state.wow_di, st.session_state.yoy_di, st.session_state.mix_di = \
-                    calculate_all_diffusion_indices(
-                        st.session_state.weekly_df, 
-                        st.session_state.source_map,
-                        # Pass the unified thresholds
-                        missing_threshold=current_missing, 
-                        tolerance_threshold=current_tolerance
-                    )
-                st.session_state.di_recalculation_needed = False # Reset flag after successful calculation
-            except Exception as e:
-                 st.error(f"计算扩散指数时出错: {e}")
-                 st.session_state.wow_di = pd.DataFrame() # Clear results on error
-                 st.session_state.yoy_di = pd.DataFrame()
-                 st.session_state.mix_di = pd.DataFrame()
-                 st.session_state.di_recalculation_needed = False # Reset flag even on error to avoid loop
-    else:
-        st.session_state.di_recalculation_needed = False
-        st.session_state.wow_di = pd.DataFrame()
-        st.session_state.yoy_di = pd.DataFrame()
-        st.session_state.mix_di = pd.DataFrame()
-        # No warning here, handled in Tab 3
+        # --- Store previous sub-module for change detection --- #
+        previous_sub_module = st.session_state.get('selected_sub_module')
 
-# --- Main Area --- 
-if not st.session_state.data_loaded:
-    # st.warning("请在左侧侧边栏上传 Excel 数据文件以开始分析。") # Commented out this warning
-    st.stop()
-
-# --- Main Area with Tabs ---
-tab1, tab2, tab3, tab4 = st.tabs(["周度数据", "月度数据", "扩散指数", "平稳性检验"])
-
-# --- 周度数据分析 ---
-with tab1:
-    if not st.session_state.weekly_df.empty:
-        # 使用 Markdown 控制标签样式
-        st.markdown("**选择行业大类**")
-        selected_industry_w = st.selectbox(
-            "select_industry_weekly", # Internal key, label is handled by markdown
-            st.session_state.industries,
-            key="industry_select_weekly",
-            label_visibility="collapsed" # Hide the default label
-        )
-
-        if selected_industry_w:
-            # --- 显示周度摘要 --- 
-            if selected_industry_w not in st.session_state.weekly_summary_cache:
-                with st.spinner(f"正在计算 '{selected_industry_w}' 的周度摘要..."):
-                    # 筛选属于该行业的周度指标列
-                    industry_indicator_cols = [ind for ind, src in st.session_state.source_map.items()
-                                             if src == selected_industry_w and ind in st.session_state.weekly_df.columns]
-                    if industry_indicator_cols:
-                        industry_weekly_data = st.session_state.weekly_df[industry_indicator_cols]
-                        # 调用新的摘要函数
-                        try:
-                            summary_table = calculate_weekly_growth_summary(industry_weekly_data)
-                        except Exception as e:
-                             st.error(f"计算周度摘要时出错 ({selected_industry_w}): {e}")
-                             summary_table = pd.DataFrame()
-                        st.session_state.weekly_summary_cache[selected_industry_w] = summary_table
-                    else:
-                        st.session_state.weekly_summary_cache[selected_industry_w] = pd.DataFrame()
-            
-            summary_table = st.session_state.weekly_summary_cache[selected_industry_w]
-                 
-            # 使用 Markdown 控制标题字体大小 (使用 bold)
-            st.markdown(f"**{selected_industry_w} - 周度数据摘要**")
-            if not summary_table.empty:
-                # 添加颜色样式
-                def highlight_positive_negative(val):
-                    try:
-                        val_float = float(str(val).replace('%', ''))
-                        if val_float > 0:
-                            return 'background-color: #ffebee'  # 浅红色
-                        elif val_float < 0:
-                            return 'background-color: #e8f5e9'  # 浅绿色
-                        return ''
-                    except (ValueError, TypeError):
-                        return ''
-
-                # 默认按"环比上周"降序排序
-                try:
-                    summary_table_sorted = summary_table.copy()
-                    sort_col_name = '环比上周'  # 更新排序列名
-                    summary_table_sorted[f'{sort_col_name}_numeric'] = pd.to_numeric(
-                        summary_table_sorted[sort_col_name].astype(str).str.replace('%', ''), errors='coerce'
-                    )
-                    summary_table_sorted = summary_table_sorted.sort_values(
-                        by=f'{sort_col_name}_numeric', ascending=False, na_position='last'
-                    ).drop(columns=[f'{sort_col_name}_numeric'])
-                except KeyError:
-                    st.warning(f"无法按 '{sort_col_name}' 排序周度摘要，该列不存在。")
-                    summary_table_sorted = summary_table
-                except Exception as e:
-                    st.warning(f"按 '{sort_col_name}' 排序周度摘要时出错: {e}")
-                    summary_table_sorted = summary_table
-
-                # 应用样式并显示表格
-                try:
-                    highlight_cols = ['环比上周', '环比上月', '同比上年']  # 更新高亮列名
-                    # 更新格式化字典以匹配新函数可能返回的列
-                    styled_table = summary_table_sorted.style.format({
-                        '环比上周': '{:.2%}',   # 百分比格式
-                        '环比上月': '{:.2%}',   # 百分比格式
-                        '同比上年': '{:.2%}',   # 百分比格式
-                        '上周值': '{:.2f}',    # 保留两位小数
-                        '上月值': '{:.2f}',    # 保留两位小数
-                        '上年值': '{:.2f}',    # 保留两位小数
-                        '近5年最大值': '{:.2f}',  # 保留两位小数
-                        '近5年最小值': '{:.2f}',  # 保留两位小数
-                        '近5年平均值': '{:.2f}'   # 保留两位小数
-                    }).apply(lambda x: x.map(highlight_positive_negative), subset=highlight_cols)
-                    # Hide index
-                    st.dataframe(styled_table, hide_index=True)
-                except KeyError as e:
-                    st.error(f"格式化/高亮周度摘要表时出错，列名可能不匹配: {e} (需要列: {highlight_cols})")
-                    st.dataframe(summary_table_sorted, hide_index=True)
-                except Exception as e:
-                    st.error(f"格式化/高亮周度摘要表时出错: {e}")
-                    st.dataframe(summary_table_sorted, hide_index=True)
-
-                # 显示所有指标的时间序列图
-                industry_indicators = [ind for ind, src in st.session_state.source_map.items()
-                                    if src == selected_industry_w and ind in st.session_state.weekly_df.columns]
-                
-                if not industry_indicators: 
-                    st.warning(f"行业 '{selected_industry_w}' 没有可供可视化的周度指标。")
-                else:
-                    current_year = datetime.now().year
-                    previous_year = current_year - 1
-                    
-                    # 计算每个指标的周环比并排序 (用于图表分列)
-                    indicator_changes = {}
-                    for indicator in industry_indicators:
-                        indicator_series = st.session_state.weekly_df[indicator].dropna()
-                        if len(indicator_series) >= 2:
-                            latest_value = indicator_series.iloc[-1]
-                            previous_value = indicator_series.iloc[-2]
-                            if previous_value != 0:
-                                try:
-                                     wow_change = (latest_value - previous_value) / previous_value
-                                     indicator_changes[indicator] = wow_change
-                                except ZeroDivisionError:
-                                     indicator_changes[indicator] = np.inf
-                            else:
-                                indicator_changes[indicator] = np.inf
-                        else:
-                            indicator_changes[indicator] = 0
-                    
-                    # 按周环比排序指标 (用于图表分列)
-                    sorted_indicators = sorted(industry_indicators,
-                                            key=lambda x: indicator_changes.get(x, 0) if pd.notna(indicator_changes.get(x, 0)) else -np.inf, # Handle NaN/inf
-                                            reverse=True)
-                    
-                    # 创建两列布局
-                    col1, col2 = st.columns(2)
-                    
-                    # 在第一列显示周环比为正的指标
-                    with col1:
-                        for indicator in sorted_indicators:
-                            change = indicator_changes.get(indicator, 0)
-                            if pd.notna(change) and change > 0 and change != np.inf:
-                                indicator_series = st.session_state.weekly_df[indicator].dropna()
-                                if not indicator_series.empty:
-                                    with st.spinner(f"正在生成 {indicator} 的图表..."):
-                                        historical_stats = calculate_historical_weekly_stats(indicator_series, current_year)
-                                        fig = plot_weekly_indicator(
-                                            indicator_series=indicator_series,
-                                            historical_stats=historical_stats,
-                                            indicator_name=indicator,
-                                            current_year=current_year,
-                                            previous_year=previous_year
-                                        )
-                                        st.plotly_chart(fig, use_container_width=True)
-                    
-                    # 在第二列显示周环比为负/零/Inf 的指标
-                    with col2:
-                        for indicator in sorted_indicators:
-                            change = indicator_changes.get(indicator, 0)
-                            if not (pd.notna(change) and change > 0 and change != np.inf):
-                                indicator_series = st.session_state.weekly_df[indicator].dropna()
-                                if not indicator_series.empty:
-                                    with st.spinner(f"正在生成 {indicator} 的图表..."):
-                                        historical_stats = calculate_historical_weekly_stats(indicator_series, current_year)
-                                        fig = plot_weekly_indicator(
-                                            indicator_series=indicator_series,
-                                            historical_stats=historical_stats,
-                                            indicator_name=indicator,
-                                            current_year=current_year,
-                                            previous_year=previous_year
-                                        )
-                                        st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning(f"未能计算或找不到 '{selected_industry_w}' 的周度指标摘要。")
-        # else: # Optional block if needed when no industry is selected
-            # pass 
-            
+        if not st.session_state.selected_sub_module or st.session_state.selected_sub_module not in sub_module_options:
+            st.session_state.selected_sub_module = sub_module_options[0]
+        
+        try:
+            current_sub_module_index = sub_module_options.index(st.session_state.selected_sub_module)
+        except ValueError: 
+            current_sub_module_index = 0
+            st.session_state.selected_sub_module = sub_module_options[0]
+        
+        expander_label = f"{st.session_state.selected_main_module} 子选项"
+        with st.expander(expander_label, expanded=True):
+            selected_sub_module_val = st.radio(
+                f"选择 {st.session_state.selected_main_module} 子项:",
+                sub_module_options,
+                index=current_sub_module_index,
+                key=f"sub_module_radio_{st.session_state.selected_main_module.replace(' ', '_')}", 
+                label_visibility="collapsed"
+            )
+            if selected_sub_module_val != st.session_state.selected_sub_module:
+                st.session_state.selected_sub_module = selected_sub_module_val
+                # --- Add cleanup logic here when sub-module changes --- #
+                if previous_sub_module == "数据探索" and selected_sub_module_val != "数据探索":
+                    st.session_state.pop('stationarity_tab_preview_df', None)
+                    # print(f"[DEBUG Dashboard Nav] Left '数据探索', cleared stationarity_tab_preview_df.") # 移除debug打印
+                # Add similar cleanups for other sub-modules if needed
+                # ❌ 减少不必要的rerun调用，让Streamlit自然重新渲染
+                # st.rerun() 
     else: 
-        st.warning("未加载周度数据，请先在数据加载步骤中处理。")
+        # --- Also clear if switching FROM a main module that HAD sub-modules --- #
+        if st.session_state.selected_sub_module is not None: 
+             if st.session_state.selected_sub_module == "数据探索": # Clear if we were in data explore
+                 st.session_state.pop('stationarity_tab_preview_df', None)
+                 # print(f"[DEBUG Dashboard Nav] Switched main module away from '应用工具' (while sub was '数据探索'), cleared stationarity_tab_preview_df.") # 移除debug打印
+             st.session_state.selected_sub_module = None
+             # Consider if rerun needed here
+
+# --- 新增：通用侧边栏组件渲染逻辑 >>> ---
+if st.session_state.get('selected_main_module') == "应用工具":
+    st.sidebar.markdown("---") # 分隔线
+    # # 1. 当前数据预览
+    # st.sidebar.subheader("当前数据预览")
+    # processed_data = st.session_state.get('ts_tool_data_processed')
+    # if processed_data is not None and not processed_data.empty:
+    #     st.sidebar.dataframe(processed_data.head())
+    #     st.sidebar.caption(f"当前显示: 预处理后数据 (形状: {processed_data.shape[0]}行, {processed_data.shape[1]}列)")
+    # else:
+    #     st.sidebar.caption("当前无已处理数据可预览。")
+    # 
+    # st.sidebar.markdown(" ") # 增加一些间距
+    
+    # 2. 暂存的数据集 (调用原有的函数)
+    # 注意：display_staged_data_sidebar 需要 st 作为第一个参数，session_state 作为第二个
+    # 但在这里我们直接使用 st.sidebar 来确保它在侧边栏中渲染，并传递 st.session_state
+    # 如果 display_staged_data_sidebar 内部也用 st.sidebar，则无需包装
+    # 假设 display_staged_data_sidebar(st_object, session_state_object) 直接在传入的 st_object 上渲染
+    try:
+        with st.sidebar: # 确保在其上下文内渲染
+             display_staged_data_sidebar(st, st.session_state) # 直接调用，它应该使用传入的 st 对象在其自己的 UI 上下文（这里是sidebar）渲染
+    except Exception as e_sidebar_render:
+        st.sidebar.error(f"加载暂存区侧边栏时出错: {e_sidebar_render}")
         
-with tab2:
-    if not st.session_state.monthly_df.empty:
-        
-        # --- 显示月度摘要 --- #
-        st.markdown("**月度数据摘要**")
-        try:
-            monthly_summary_table = calculate_monthly_growth_summary(st.session_state.monthly_df)
-        except Exception as e:
-            st.error(f"计算月度摘要时出错: {e}")
-            monthly_summary_table = pd.DataFrame()
+# --- <<< 结束新增 >>> ---    
 
-        if not monthly_summary_table.empty:
-            # 颜色样式函数 (保持不变)
-            def highlight_monthly_positive_negative(val):
-                try:
-                    # Convert to float, handle potential percentage sign if format applied before styling
-                    val_float = float(str(val).replace('%', '')) 
-                    if val_float > 0:
-                        return 'background-color: #ffebee'  # 浅红色
-                    elif val_float < 0:
-                        return 'background-color: #e8f5e9'  # 浅绿色
-                    return ''
-                except (ValueError, TypeError):
-                    return '' # Return empty string for non-numeric or error cases
+# --- Main Area (NEW STRUCTURE) ---
 
-            # 默认按"环比上月"降序排序
-            try:
-                monthly_summary_sorted = monthly_summary_table.copy()
-                # 确保 '环比上月' 列存在
-                sort_col_name = '环比上月' # Define column name
-                # Use original (unformatted) data for sorting if possible, otherwise convert formatted string
-                if pd.api.types.is_numeric_dtype(monthly_summary_sorted[sort_col_name]):
-                     monthly_summary_sorted[f'{sort_col_name}_numeric'] = monthly_summary_sorted[sort_col_name]
-                else: # If data is already string/formatted, attempt conversion
-                    monthly_summary_sorted[f'{sort_col_name}_numeric'] = pd.to_numeric(
-                        monthly_summary_sorted[sort_col_name].astype(str).str.replace('%', ''), errors='coerce'
-                    )
+# --- 1. 数据预览 ---
+if st.session_state.selected_main_module == "数据预览":
+    # st.header("数据概览") # 将由子模块处理标题
+    # st.subheader("上传用于概览的数据文件") # 将由子模块处理
 
-                monthly_summary_sorted = monthly_summary_sorted.sort_values(
-                    by=f'{sort_col_name}_numeric', ascending=False, na_position='last'
-                ).drop(columns=[f'{sort_col_name}_numeric'])
-            except KeyError:
-                st.warning(f"无法按 '{sort_col_name}' 排序月度摘要，该列不存在。")
-                monthly_summary_sorted = monthly_summary_table
-            except Exception as e:
-                st.warning(f"按 '{sort_col_name}' 排序月度摘要时出错: {e}")
-                monthly_summary_sorted = monthly_summary_table
+    # 根据选择的子模块展示不同内容
+    selected_sub = st.session_state.get('selected_sub_module')
 
-            # 应用样式并显示表格
-            try:
-                highlight_cols = ['环比上月', '同比上年']  # 高亮列
-                # 格式化字典：差值列用 '{:.2f}%'，其他数值用 '{:.2f}'
-                format_dict = {col: '{:.2f}' for col in monthly_summary_sorted.select_dtypes(include=np.number).columns}
-                format_dict.update({
-                    '环比上月': '{:.2f}%',
-                    '同比上年': '{:.2f}%'
-                })
+    if selected_sub == "工业":
+        # 此处稍后将调用 display_industrial_tabs()
+        # st.write("这里将展示工业数据的总体情况、日度、周度、月度、年度数据 Tabs。") # <<< 移除/注释掉
+        display_industrial_tabs(st.session_state, extract_industry_name) # <<< 修改调用：传递 extract_industry_name
 
-                styled_monthly_table = monthly_summary_sorted.style.format(format_dict)\
-                                         .apply(lambda x: x.map(highlight_monthly_positive_negative), subset=highlight_cols)
-                # Hide index
-                st.dataframe(styled_monthly_table, hide_index=True)
-            except KeyError as e:
-                st.error(f"格式化/高亮月度摘要表时出错，列名可能不匹配: {e} (需要列: {highlight_cols})")
-                st.dataframe(monthly_summary_sorted, hide_index=True)
-            except Exception as e:
-                st.error(f"格式化/高亮月度摘要表时出错: {e}")
-                st.dataframe(monthly_summary_sorted, hide_index=True)
 
-            st.divider()
+    elif selected_sub == "消费":
+        st.header("消费数据预览") # 示例标题
+        st.write("这里将展示消费数据的相关内容。")
+        # (消费模块的UI和逻辑)
+    
+    else: # 当 "数据预览" 被选中但没有特定子模块被选中时 (例如，刚切换到 "数据预览")
+        st.info("请在左侧选择一个数据预览的子领域（如：工业、消费）。")
 
-        # --- 显示月度图表 --- #
-        # st.markdown("#### 月度工业增加值同比 (%)") # Remove the title
 
-        # 查找工业增加值指标
-        try:
-            value_added_indicators = [
-                col for col in st.session_state.monthly_df.columns
-                if "工业增加值" in col
-            ]
-        except Exception as e:
-            st.error(f"查找工业增加值指标时出错: {e}")
-            value_added_indicators = []
-
-        if not value_added_indicators:
-            st.warning("未在月度数据中找到包含'工业增加值'的指标列。")
-        else:
-            current_year = datetime.now().year
-            previous_year = current_year - 1
-
-            num_columns = 2
-            cols = st.columns(num_columns)
-            col_index = 0
-
-            for indicator in sorted(value_added_indicators):
-                indicator_series = st.session_state.monthly_df[indicator].dropna()
-                if not indicator_series.empty:
-                    with cols[col_index % num_columns]:
-                        with st.spinner(f"正在生成 {indicator} 的月度图表..."):
-                            # 提取并清理行业名称作为标题
-                            try:
-                                # 尝试按常见分隔符分割，取第一部分
-                                parts = indicator.split('-')
-                                if len(parts) > 1:
-                                     indicator_title = parts[0].strip()
-                                else:
-                                     # 如果没有分隔符，直接使用，但清理特定词语
-                                     indicator_title = indicator.strip()
-                                # 进一步清理标题
-                                indicator_title = indicator_title.replace("规模以上工业增加值：", "").replace("当月同比", "").strip()
-                            except Exception as title_e:
-                                print(f"Error cleaning title for {indicator}: {title_e}")
-                                indicator_title = indicator # Fallback to full name if cleaning fails
-
-                            fig = plot_monthly_indicator(
-                                indicator_series=indicator_series,
-                                indicator_name=indicator_title,
-                                current_year=current_year,
-                                previous_year=previous_year
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                    col_index += 1
-                else:
-                    st.warning(f"指标 '{indicator}' 没有数据。")
+# --- 2. 行业分析 ---
+elif st.session_state.selected_main_module == "行业分析":
+    st.header("行业分析")
+    selected_exploration_tool = st.session_state.selected_sub_module
+    
+    if selected_exploration_tool: # 确保 selected_exploration_tool 不是 None
+        st.subheader(f"{selected_exploration_tool}")
     else:
-        st.warning("未加载月度数据。")
+        # 如果没有选择子模块（例如，刚切换到"行业分析"），可以显示一个通用信息
+        st.info("请在左侧选择一个行业分析的子工具。") 
+        # 或者根据 MODULE_CONFIG 自动选择第一个子工具并 rerun，但这取决于期望行为
 
-with tab3:
-    # Check if DI data is available (calculated or loaded)
-    di_available = not st.session_state.wow_di.empty or not st.session_state.yoy_di.empty or not st.session_state.mix_di.empty
-
-    if di_available:
-        # --- Main content of Tab 3 --- 
-        st.markdown("**选择行业大类**") 
-        selected_industry_di = st.selectbox(
-            "industry_select_di_label", 
-            st.session_state.industries, 
-            key="industry_select_di",
-            label_visibility="collapsed" 
-        )
+    if selected_exploration_tool == "扩散分析":
+        # 以下是原扩散分析逻辑，取消注释
+        # 注意：display_diffusion_tab 需要 session_state 中有 'data_loaded', 'weekly_summary_cache' 等
+        # 这些数据通常是在 "数据概览" (现在是 "数据预览") 模块中加载的。
+        # 如果直接在这里使用，需要确保这些数据已通过某种方式加载，或者 display_diffusion_tab 内部有自己的数据上传机制。
+        # 原始 dashboard.py 中，这一部分似乎没有独立的文件上传器，它依赖于之前模块加载的数据。
+        # 我们需要确认 display_diffusion_tab 的确切数据依赖。
         
-        st.markdown("**同比/环比扩散指数计算参数**") 
-
-        # --- Type Correction before rendering sliders --- 
-        # Ensure slider values in session state are floats before passing them to widgets
-        if not isinstance(st.session_state.tolerance_threshold, (int, float)):
-            warnings.warn(f"修正 tolerance_threshold 类型从 {type(st.session_state.tolerance_threshold)} 为 float.")
-            if isinstance(st.session_state.tolerance_threshold, (list, tuple)) and st.session_state.tolerance_threshold:
-                try: st.session_state.tolerance_threshold = float(st.session_state.tolerance_threshold[0])
-                except (ValueError, TypeError): st.session_state.tolerance_threshold = DEFAULT_TOLERANCE_THRESHOLD
-            else: st.session_state.tolerance_threshold = DEFAULT_TOLERANCE_THRESHOLD
-
-        if not isinstance(st.session_state.missing_threshold, (int, float)):
-             warnings.warn(f"修正 missing_threshold 类型从 {type(st.session_state.missing_threshold)} 为 float.")
-             if isinstance(st.session_state.missing_threshold, (list, tuple)) and st.session_state.missing_threshold:
-                 try: st.session_state.missing_threshold = float(st.session_state.missing_threshold[0])
-                 except (ValueError, TypeError): st.session_state.missing_threshold = DEFAULT_MISSING_THRESHOLD
-             else: st.session_state.missing_threshold = DEFAULT_MISSING_THRESHOLD
-        # --- End of Type Correction --- 
-
-        # Ensure sliders are correctly indented within the if di_available block
-        col_slider1, col_slider2 = st.columns(2)
+        # 检查 diffusion_analysis_tab.py，它内部有如下检查:
+        # if not session_state.get('data_loaded', False):
+        #     st.info("请先在左侧侧边栏上传用于周度/月度分析的数据文件。")
+        #     return
+        # 这意味着它期望数据已在别处加载。
         
-        with col_slider1:
-            tolerance_threshold_widget_val = st.slider( 
-                "增长容忍度阈值", 
-                min_value=0.0, max_value=0.2, 
-                value=float(st.session_state.tolerance_threshold), 
-                step=0.005,
-                format="%.3f", key="tolerance_slider_tab3",
-                on_change=request_di_recalculation, 
-                help="指标增长率超过此值才被视为正增长。影响所有三种扩散指数。"
-            )
-        with col_slider2:
-             missing_threshold_widget_val = st.slider( 
-                "缺失值比例阈值", 
-                min_value=0.1, max_value=1.0, 
-                value=float(st.session_state.missing_threshold), 
-                step=0.05,
-                format="%.2f", key="missing_slider_tab3",
-                on_change=request_di_recalculation,
-                help="单个日期允许的最大缺失指标比例。超过此比例，该日期的扩散指数为 NaN (统一应用于所有指数)。"
-            )
+        # 在当前 dashboard.py 的结构下，数据主要在 "数据预览" -> "工业" 模块加载并存入 st.session_state.preview_... 
+        # display_diffusion_tab 使用的是如 weekly_df, weekly_summary_cache 等没有 preview_ 前缀的键。
+        # 因此，直接调用 display_diffusion_tab(st.session_state) 可能找不到它需要的数据。
+        
+        # 解决方案1: 修改 display_diffusion_tab 以使用 preview_ 前缀的键 (如果数据源一致)
+        # 解决方案2: 在这里提供一个数据上传器，并适配 display_diffusion_tab
+        # 解决方案3: 明确指引用户先去"数据预览"加载数据 (不太友好)
+        
+        # 暂时我们先恢复调用，并观察其行为。如果报错或提示数据未加载，则需要进一步适配。
+        try:
+            # 在调用前，我们可以尝试将 preview_系列数据 映射到 display_diffusion_tab 期望的 session_state 键
+            # 这是一种临时的桥接方法
+            if st.session_state.get('preview_data_loaded_files') is not None:
+                st.session_state['data_loaded'] = True # 标志数据已加载
+                st.session_state['weekly_df'] = st.session_state.get('preview_weekly_df', pd.DataFrame())
+                st.session_state['monthly_df'] = st.session_state.get('preview_monthly_df', pd.DataFrame())
+                st.session_state['source_map'] = st.session_state.get('preview_source_map', {})
+                st.session_state['indicator_industry_map'] = st.session_state.get('preview_indicator_industry_map', {})
+                st.session_state['weekly_industries'] = st.session_state.get('preview_weekly_industries', [])
+                st.session_state['monthly_industries'] = st.session_state.get('preview_monthly_industries', [])
+                st.session_state['clean_industry_map'] = st.session_state.get('preview_clean_industry_map', {})
+                st.session_state['weekly_summary_cache'] = st.session_state.get('preview_weekly_summary_cache', {})
+                # monthly_summary_cache 在 diffusion_analysis_tab 中似乎没有直接使用，但以防万一
+                st.session_state['monthly_summary_cache'] = st.session_state.get('preview_monthly_summary_cache', {})
+            else:
+                # 如果 preview 数据不存在，确保 'data_loaded' 为 False，让 display_diffusion_tab 内部的检查起作用
+                st.session_state['data_loaded'] = False
+
+            display_diffusion_tab(st, st.session_state) 
+        except Exception as e_diff_tab:
+            st.error(f"加载扩散分析模块时出错: {e_diff_tab}")
+            import traceback
+            st.error(traceback.format_exc())
+
+    # elif selected_exploration_tool: # 这部分已在上面处理过，避免重复
+    #     st.info(f"'{selected_exploration_tool}' 功能正在开发中或未完全配置。")
+
+# --- 3. 模型分析 ---
+elif st.session_state.selected_main_module == "模型分析":
+    selected_model_type = st.session_state.selected_sub_module
+
+    if selected_model_type == "DFM 模型":
+        dfm_tab_names = MODULE_CONFIG["模型分析"]["DFM 模型"]
+        
+        if len(dfm_tab_names) == 4: # 检查是否为更新后的4个选项卡
+            tab_data_prep, tab_model_train, tab_results, tab_news = st.tabs(dfm_tab_names)
+
+            with tab_data_prep:
+                render_dfm_data_prep_tab(st, st.session_state)
+
+            with tab_model_train: # 新增：模型训练选项卡
+                render_dfm_train_model_tab(st, st.session_state)
+
+            with tab_results:
+                render_dfm_tab(st, st.session_state)
+
+            with tab_news:
+                # 延迟导入新闻分析模块，避免重复导入打印
+                from DFM.news_analysis.news_analysis_front_end import render_news_analysis_tab
+                render_news_analysis_tab(st, st.session_state)
+
+    elif selected_model_type == "其他模型 (占位)":
+        st.info(f"{selected_model_type} 功能正在开发中。")
+    else:
+        st.info("请在左侧选择一个模型进行分析。")
+
+# --- 4. 应用工具 ---
+elif st.session_state.selected_main_module == "应用工具":
+    selected_tool = st.session_state.selected_sub_module
+
+    if selected_tool == "数据预处理":
+        preprocess_tab_names = MODULE_CONFIG["应用工具"]["数据预处理"]
+        if preprocess_tab_names and len(preprocess_tab_names) == 4: # 确保列表不为空且有四个元素
+            data_clean_tab, var_compute_tab, append_merge_tab, data_compare_tab = st.tabs(preprocess_tab_names)
+
+            with data_clean_tab:
+                try:
+                    display_time_series_tool_tab(st, st.session_state)
+                except Exception as e:
+                    st.error(f"加载 {preprocess_tab_names[0]} 模块时出错: {e}")
+                    # st.exception(e)
             
-        st.divider()
+            with var_compute_tab:
+                try:
+                    display_time_series_compute_tab(st, st.session_state)
+                except Exception as e:
+                    st.error(f"加载 {preprocess_tab_names[1]} 模块时出错: {e}")
+                    st.info("变量计算模块尚未完全集成。")
 
-        if selected_industry_di:
-            # --- Updated Plotting Function --- 
-            def plot_diffusion_index(series: pd.Series, title: str, color: str):
-                if series is None or series.empty: return None 
-                if series.empty: return None
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=series.index, y=series, mode='lines+markers',
-                    name='扩散指数', connectgaps=False,
-                    line=dict(color=color), marker=dict(color=color, size=4),
-                    hovertemplate="%{x|%Y-%m-%d}：%{y:.2f}<extra></extra>"
-                ))
-                fig.add_hline(y=50, line_dash="dash", line_color="red")
-                
-                # Add rangeselector buttons and adjust positioning
-                fig.update_layout(
-                    title=f"{selected_industry_di} - {title}", 
-                    showlegend=False,
-                    xaxis_title="", yaxis_title="", xaxis_tickformat='%Y-%m',
-                    margin=dict(l=20, r=20, t=80, b=40), # Increased top margin further for buttons below title
-                    xaxis=dict(
-                        rangeselector=dict(
-                            buttons=list([
-                                dict(count=3, label="3m", step="month", stepmode="backward"),
-                                dict(count=6, label="6m", step="month", stepmode="backward"),
-                                dict(count=1, label="1y", step="year", stepmode="backward"),
-                                dict(count=3, label="3y", step="year", stepmode="backward"),
-                                dict(step="all", label="All")
-                            ]),
-                            # Positioning the buttons to the top center inside the plot area (below title)
-                            x=0.5,          # Center horizontally
-                            y=0.95,         # Position close to the top edge, below title (adjust 0.9 to 0.98 as needed)
-                            xanchor='center', # Anchor point is the center of the buttons
-                            yanchor='top',    # Anchor point is the top of the buttons
-                            bgcolor='rgba(255,255,255,0.7)', 
-                            font=dict(size=10) 
-                        ),
-                        rangeslider=dict(visible=False),
-                        type="date"
-                    )
-                )
-                return fig
+            with append_merge_tab:
+                try:
+                    from tools.time_series_pretreat.time_series_clean.ui_components.append_merge_ui import show_append_merge_data_ui
+                    show_append_merge_data_ui()
+                except ImportError as e_import:
+                    st.error(f"无法导入 {preprocess_tab_names[2]} 模块: {e_import}。请检查路径和文件名。")
+                except Exception as e:
+                    st.error(f"加载 {preprocess_tab_names[2]} 模块时出错: {e}")
+                    # st.exception(e)                      
 
-            # --- Get Data and Plot --- 
-            wow_series = st.session_state.wow_di.get(selected_industry_di)
-            yoy_series = st.session_state.yoy_di.get(selected_industry_di)
-            mix_series = st.session_state.mix_di.get(selected_industry_di)
+            with data_compare_tab:
+                try:
+                    render_data_comparison_ui() # <<< 调用数据比较UI渲染函数
+                except Exception as e:
+                    st.error(f"加载 {preprocess_tab_names[3]} ({render_data_comparison_ui.__module__}) 模块时出错: {e}")
+                    # st.exception(e)                      
 
-            fig_wow = plot_diffusion_index(wow_series, "环比扩散指数", color='cornflowerblue')
-            if fig_wow: st.plotly_chart(fig_wow, use_container_width=True)
-            else: st.warning(f"行业 '{selected_industry_di}' 没有有效的环比扩散指数数据。")
-
-            fig_yoy = plot_diffusion_index(yoy_series, "同比扩散指数", color='mediumseagreen')
-            if fig_yoy: st.plotly_chart(fig_yoy, use_container_width=True)
-            else: st.warning(f"行业 '{selected_industry_di}' 没有有效的同比扩散指数数据。")
-            
-            fig_mix = plot_diffusion_index(mix_series, "同环比扩散指数", color='darkorange')
-            if fig_mix: st.plotly_chart(fig_mix, use_container_width=True)
-            else: st.warning(f"行业 '{selected_industry_di}' 没有有效的同环比扩散指数数据。")
-            
-    else: # DI data is not available
-        if st.session_state.data_loaded:
-            st.info("正在等待或计算扩散指数... 请确保已上传有效的周度数据。")
         else:
-            st.warning("请先上传数据文件以计算扩散指数。")
+            st.error(f"数据预处理的子模块配置错误（应包含四个标签页名称）。请检查 MODULE_CONFIG 设置。当前名称: {preprocess_tab_names}")
 
-    # --- Add Explanation Expander for Diffusion Indices --- 
-    st.divider()
-    with st.expander("扩散指数计算原理"):
-        st.markdown("""
-        扩散指数衡量在一组指标中表现出积极变化的指标所占的比例（通常以百分比表示，范围 0-100）。高于 50 通常表示总体扩张，低于 50 表示收缩。
-        
-        **计算中使用的参数:**
-        *   **增长容忍度阈值 (Tolerance):** 指标的增长率需要超过此阈值才被视为正增长。
-        *   **缺失值比例阈值 (Missing):** 单个时间点允许的最大缺失指标比例。若超过此阈值，该时间点的扩散指数记为缺失值 (NaN)。
+    elif selected_tool == "数据探索": # <<< 新增数据探索逻辑
+        explore_tab_names = MODULE_CONFIG["应用工具"]["数据探索"]
+        if explore_tab_names and len(explore_tab_names) == 3:
+            tab_stationarity, tab_correlation, tab_lead_lag = st.tabs(explore_tab_names)
 
-        --- 
-        
-        **1. 周环比扩散指数 (WoW DI):**
-        衡量本周相较于**上一周**表现出正增长（超过容忍度阈值）的指标比例。
-        *   计算每个指标的周环比增长率: `WoW_Rate = (今值 - 上周值) / |上周值|` (分母取绝对值避免负基数问题，或根据实际业务调整)。
-        *   统计满足 `WoW_Rate > Tolerance` 的指标数量 `N_wow_positive`。
-        *   统计当前时间点有效的指标总数 `N_valid`。
-        *   `WoW DI = (N_wow_positive / N_valid) * 100` (需考虑缺失值阈值)。
-        
-        **2. 年同比扩散指数 (YoY DI):**
-        衡量本周相较于**去年同期**表现出正增长（超过容忍度阈值）的指标比例。
-        *   计算每个指标的年同比生长率: `YoY_Rate = (今值 - 去年同期值) / |去年同期值|`。
-        *   统计满足 `YoY_Rate > Tolerance` 的指标数量 `N_yoy_positive`。
-        *   `YoY DI = (N_yoy_positive / N_valid) * 100` (需考虑缺失值阈值)。
+            with tab_stationarity:
+                st.markdown("##### **设置与数据选择**")
+                st.write("从下方列表选择暂存区的数据集进行平稳性分析:")
 
-        **3. 同环比扩散指数 (Mix DI):**
-        衡量**同时满足**周环比和年同比均为正增长（均超过容忍度阈值）的指标比例。这代表了更强的增长信号。
-        *   统计同时满足 `WoW_Rate > Tolerance` **且** `YoY_Rate > Tolerance` 的指标数量 `N_mix_positive`。
-        *   `Mix DI = (N_mix_positive / N_valid) * 100` (需考虑缺失值阈值)。
-        
-        *注意：具体的增长率计算方式和 Mix DI 的确切定义可能因实际业务逻辑而异。*
-        """, unsafe_allow_html=True)
+                # --- <<< 修改：持久化和恢复数据集选择 >>> --- 
+                staged_data_options = [""] + list(st.session_state.get('staged_data', {}).keys())
+                
+                default_stationarity_idx = 0
+                previous_stationarity_selection = st.session_state.get('stationarity_active_dataset_name', None)
+                if previous_stationarity_selection and previous_stationarity_selection in staged_data_options:
+                    default_stationarity_idx = staged_data_options.index(previous_stationarity_selection)
 
-# --- 平稳性检验 --- (MODIFIED TAB)
-with tab4:
-    # Removed header
-    
-    # Use standard label with markdown attempt for bolding
-    alpha_stat = st.selectbox(
-        label="**选择显著性水平 (α)**", # Try markdown bolding here
-        options=[0.01, 0.05, 0.10], 
-        index=1, 
-        key="alpha_selectbox_stat"
-        # Removed label_visibility="collapsed"
-    )
-    
-    # --- Auto-run the test if data is loaded and results are missing --- 
-    # Check if results for the current alpha are missing or data is newly loaded
-    results_missing = (st.session_state.get('adf_results_monthly', pd.DataFrame()).empty and 
-                       st.session_state.get('adf_results_weekly', pd.DataFrame()).empty)
-    # Add a check for alpha change, maybe store last alpha used?
-    # For simplicity now, we run if results are empty OR if button *was* present (logic removed)
-    # We need a robust way to trigger recalculation if alpha changes, 
-    # but for now, let's run if results are empty after data load.
-    
-    # Simple trigger: Run if data loaded and results are empty
-    if st.session_state.data_loaded and results_missing:
-        data_found = False
-        with st.spinner("正在自动执行检验与处理..."):
-            # Process Monthly Data
-            if not st.session_state.monthly_df.empty:
-                results_m, processed_m = test_and_process_stationarity(st.session_state.monthly_df, alpha=alpha_stat)
-                st.session_state.adf_results_monthly = results_m
-                st.session_state.processed_monthly_df = processed_m
-                data_found = True
-            else:
-                st.session_state.adf_results_monthly = pd.DataFrame() # Ensure it's empty if no data
-                st.session_state.processed_monthly_df = pd.DataFrame()
-                # st.warning("未找到月度数据进行检验。", icon="⚠️") # Less noisy without button
-            
-            # Process Weekly Data
-            if not st.session_state.weekly_df.empty:
-                results_w, processed_w = test_and_process_stationarity(st.session_state.weekly_df, alpha=alpha_stat)
-                st.session_state.adf_results_weekly = results_w
-                st.session_state.processed_weekly_df = processed_w
-                data_found = True
-            else:
-                st.session_state.adf_results_weekly = pd.DataFrame() # Ensure it's empty if no data
-                st.session_state.processed_weekly_df = pd.DataFrame()
-                # st.warning("未找到周度数据进行检验。", icon="⚠️") # Less noisy without button
-        
-        # if data_found: # Less noisy without button
-            # st.success("平稳性检验与处理完成！")
-            
-    # Display Results and Download Buttons
-    st.divider()
+                selected_staged_data_name_stationarity = st.selectbox(
+                    "选择一个数据集:",
+                    options=staged_data_options,
+                    index=default_stationarity_idx, 
+                    key="stationarity_selectbox_main" 
+                )
 
-    # --- Display Monthly Results --- 
-    adf_results_monthly = st.session_state.get('adf_results_monthly', pd.DataFrame())
-    processed_monthly_df = st.session_state.get('processed_monthly_df', pd.DataFrame())
-    
-    if not adf_results_monthly.empty:
-        st.markdown('**月度数据检验和处理结果**') 
-        df_to_display_m = adf_results_monthly
-        
-        def style_stationarity(val):
-            if val == '是': return 'color: green; font-weight: bold;'
-            if val == '否': return 'color: red;'
-            if '数据不足' in str(val) or '测试出错' in str(val): return 'color: orange;'
-            return ''
-            
-        st.dataframe(df_to_display_m.style.format({
-            '原始P值': '{:.4f}', # Display 4 decimals in UI
-            '处理后P值': '{:.4f}',
-        }).applymap(style_stationarity, subset=['原始是否平稳', '最终是否平稳']), 
-        hide_index=True)
+                selected_staged_df_stationarity = None
 
-        # --- Excel Download Button for Monthly Data (with P-value formatting) ---
-        if not processed_monthly_df.empty:
-            output_m = io.BytesIO()
-            # Format P-values specifically for Excel export (3 decimals)
-            adf_results_monthly_excel = adf_results_monthly.copy()
-            # Handle potential non-numeric values before formatting
-            p_cols_to_format = ['原始P值', '处理后P值']
-            for col in p_cols_to_format:
-                 if col in adf_results_monthly_excel.columns:
-                     adf_results_monthly_excel[col] = pd.to_numeric(adf_results_monthly_excel[col], errors='coerce')
-                     adf_results_monthly_excel[col] = adf_results_monthly_excel[col].map('{:.3f}'.format, na_action='ignore')
-
-            with pd.ExcelWriter(output_m, engine='openpyxl') as writer:
-                adf_results_monthly_excel.to_excel(writer, sheet_name='数据检验和处理结果', index=False)
-                processed_monthly_df.to_excel(writer, sheet_name='处理后的数据', index=True) 
-            output_m.seek(0)
-            st.download_button(
-                label="下载月度结果 (Excel)",
-                data=output_m,
-                file_name=f'stationary_monthly_results_alpha_{alpha_stat:.2f}.xlsx',
-                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                key='download_monthly_stat_xlsx'
-            )
-        st.divider()
-    elif st.session_state.data_loaded: # Show message if data loaded but no monthly results
-        st.info("未生成月度平稳性检验结果 (可能无月度数据)。")
-        st.divider()
-
-    # --- Display Weekly Results --- 
-    adf_results_weekly = st.session_state.get('adf_results_weekly', pd.DataFrame())
-    processed_weekly_df = st.session_state.get('processed_weekly_df', pd.DataFrame())
-
-    if not adf_results_weekly.empty:
-        st.markdown('**周度数据检验和处理结果**')
-        df_to_display_w = adf_results_weekly
-        st.dataframe(df_to_display_w.style.format({
-            '原始P值': '{:.4f}', # Display 4 decimals in UI
-            '处理后P值': '{:.4f}',
-        }).applymap(style_stationarity, subset=['原始是否平稳', '最终是否平稳']), 
-        hide_index=True)
-        
-        # ADD a divider before the download button for better spacing
-        st.divider() 
-
-        # --- Excel Download Button for Weekly Data (with P-value formatting) ---
-        if not processed_weekly_df.empty:
-            output_w = io.BytesIO()
-            # Format P-values specifically for Excel export (3 decimals)
-            adf_results_weekly_excel = adf_results_weekly.copy()
-            # Handle potential non-numeric values before formatting
-            for col in p_cols_to_format: # Reuse list from monthly
-                 if col in adf_results_weekly_excel.columns:
-                    adf_results_weekly_excel[col] = pd.to_numeric(adf_results_weekly_excel[col], errors='coerce')
-                    adf_results_weekly_excel[col] = adf_results_weekly_excel[col].map('{:.3f}'.format, na_action='ignore')
+                if selected_staged_data_name_stationarity:
+                    selected_staged_df_stationarity = st.session_state.staged_data[selected_staged_data_name_stationarity]['df'].copy()
+                    st.caption(f"已选择数据集: **{selected_staged_data_name_stationarity}** (形状: {selected_staged_df_stationarity.shape}) 进行平稳性检验。")
                     
-            with pd.ExcelWriter(output_w, engine='openpyxl') as writer:
-                adf_results_weekly_excel.to_excel(writer, sheet_name='数据检验和处理结果', index=False)
-                processed_weekly_df.to_excel(writer, sheet_name='处理后的数据', index=True)
-            output_w.seek(0)
-            st.download_button(
-                label="下载周度结果 (Excel)",
-                data=output_w,
-                file_name=f'stationary_weekly_results_alpha_{alpha_stat:.2f}.xlsx',
-                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                key='download_weekly_stat_xlsx'
-            )
-            
-    elif st.session_state.data_loaded: # Show message if data loaded but no weekly results
-         st.info("未生成周度平稳性检验结果 (可能无周度数据)。")
+                    st.session_state.stationarity_active_dataset_name = selected_staged_data_name_stationarity
+                    st.session_state.stationarity_active_dataset_df = selected_staged_df_stationarity
+                    # print(f"[Dashboard - Stationarity] Saved to session_state: active_dataset_name = {selected_staged_data_name_stationarity}") # 移除debug打印 
+                else:
+                    st.info("请选择数据集以进行平稳性检验。") 
+                    if 'stationarity_active_dataset_name' in st.session_state:
+                        del st.session_state.stationarity_active_dataset_name
+                        # print("[Dashboard - Stationarity] Cleared stationarity_active_dataset_name from session_state") # 移除debug打印 
+                    if 'stationarity_active_dataset_df' in st.session_state:
+                        del st.session_state.stationarity_active_dataset_df
+                        # print("[Dashboard - Stationarity] Cleared stationarity_active_dataset_df from session_state") # 移除debug打印 
+                
+                st.divider()
+                current_selected_df_for_tab = st.session_state.get('stationarity_active_dataset_df', pd.DataFrame())
+                current_selected_name_for_tab = st.session_state.get('stationarity_active_dataset_name', None)
+                
+                # print(f"[Dashboard - Stationarity] About to call display_stationarity_tab with: name='{current_selected_name_for_tab}', df_empty={current_selected_df_for_tab.empty}") # 移除debug打印 
+                
+                st.session_state.stationarity_selected_staged_data_df = current_selected_df_for_tab
+                st.session_state.stationarity_selected_staged_data_name = current_selected_name_for_tab
+                
+                display_stationarity_tab(st, st.session_state)
 
-    # --- Explanation Expander (Moved to the end, styled label) ---
-    st.divider()
-    with st.expander("**检验与处理原理**"):
-        st.markdown("""
-        使用增广迪基-福勒检验 (ADF Test) 检验时间序列的平稳性，并按顺序尝试通过以下方法使非平稳序列变得平稳：
-        1.  **对数变换:** `log(x)` (仅适用于严格为正的序列)
-        2.  **一阶差分:** `x(t) - x(t-1)`
-        3.  **对数一阶差分:** `log(x(t)) - log(x(t-1))` (仅适用于严格为正的序列)
-        4.  **二阶差分:** `(x(t) - x(t-1)) - (x(t-1) - x(t-2))`
-        
-        检验基于以下假设：
-        - **原假设 (H0):** 序列存在单位根 (非平稳)。
-        - **备择假设 (H1):** 序列不存在单位根 (平稳)。
-        
-        如果 P 值小于选择的显著性水平 (α)，则拒绝原假设，认为序列是平稳的。处理将停在第一个成功使序列平稳的方法上。
-        """, unsafe_allow_html=True)
+            with tab_correlation:
+                st.markdown("##### **设置与数据选择**")
+                st.write("从下方列表选择暂存区的数据集进行相关性分析:")
+
+                # --- 为相关性分析标签页添加独立的数据选择器 ---
+                staged_data_options_corr = [""] + list(st.session_state.get('staged_data', {}).keys())
+                
+                # 持久化选择
+                default_corr_idx = 0
+                previous_corr_selection = st.session_state.get('correlation_own_dataset_name', None)
+                if previous_corr_selection and previous_corr_selection in staged_data_options_corr:
+                    try:
+                        default_corr_idx = staged_data_options_corr.index(previous_corr_selection)
+                    except ValueError:
+                        default_corr_idx = 0 # 如果找不到则使用默认索引
+
+                selected_staged_data_name_corr = st.selectbox(
+                    "选择一个数据集:",
+                    options=staged_data_options_corr,
+                    index=default_corr_idx,
+                    key="correlation_selectbox_main"
+                )
+
+                selected_staged_df_corr = None
+
+                if selected_staged_data_name_corr:
+                    selected_staged_df_corr = st.session_state.staged_data[selected_staged_data_name_corr]['df'].copy()
+                    st.caption(f"已选择数据集: **{selected_staged_data_name_corr}** (形状: {selected_staged_df_corr.shape}) 进行相关性分析。")
+                    
+                    # 更新session_state
+                    st.session_state.correlation_own_dataset_name = selected_staged_data_name_corr
+                    st.session_state.correlation_own_dataset_df = selected_staged_df_corr
+                    # print(f"[Dashboard - Correlation] 已保存到session_state: correlation_own_dataset_name = {selected_staged_data_name_corr}") # 移除debug打印 
+                else:
+                    st.info("请选择数据集以进行相关性分析。")
+                    if 'correlation_own_dataset_name' in st.session_state:
+                        del st.session_state.correlation_own_dataset_name
+                        # print("[Dashboard - Correlation] 已清除correlation_own_dataset_name") # 移除debug打印
+                    if 'correlation_own_dataset_df' in st.session_state:
+                        del st.session_state.correlation_own_dataset_df
+                        # print("[Dashboard - Correlation] 已清除correlation_own_dataset_df") # 移除debug打印
+                
+                st.divider()
+                current_selected_df_for_tab = st.session_state.get('correlation_own_dataset_df', pd.DataFrame())
+                current_selected_name_for_tab = st.session_state.get('correlation_own_dataset_name', None)
+                
+                # print(f"[Dashboard - Correlation] 即将调用相关性分析子模块: name='{current_selected_name_for_tab}', df_empty={current_selected_df_for_tab.empty}") # 移除debug打印
+                
+                # 向下兼容以前的状态键（供子模块使用）
+                if not current_selected_df_for_tab.empty:
+                    st.session_state['correlation_selected_df'] = current_selected_df_for_tab
+                    st.session_state['correlation_selected_df_name'] = current_selected_name_for_tab
+                    
+                    # 显示相关性分析子模块
+                    st.markdown("---")
+                    try:
+                        display_win_rate_tab(st, st.session_state) 
+                    except Exception as e_win_tab:
+                        st.error(f"加载胜率计算模块时出错: {e_win_tab}")
+                        import traceback; st.error(traceback.format_exc())
+                    
+                    st.markdown("---")
+                    try:
+                        display_dtw_tab(st, st.session_state) 
+                    except Exception as e_dtw_tab:
+                        st.error(f"加载动态规整模块时出错: {e_dtw_tab}")
+                        import traceback; st.error(traceback.format_exc())
+                    st.markdown("---") # End divider
+                else:
+                    st.warning("请选择一个数据集以进行相关性分析。")
+            
+            with tab_lead_lag:
+                # --- 新增：为领先滞后分析提供独立的数据选择器 ---
+                staged_data_options_tlc = [""] + list(st.session_state.get('staged_data', {}).keys())
+                
+                # 持久化选择
+                default_tlc_idx = 0
+                previous_tlc_selection_name = st.session_state.get('tlc_own_selected_df_name', None)
+                if previous_tlc_selection_name and previous_tlc_selection_name in staged_data_options_tlc:
+                    try:
+                        default_tlc_idx = staged_data_options_tlc.index(previous_tlc_selection_name)
+                    except ValueError:
+                        default_tlc_idx = 0 # Fallback if somehow name is not in options
+
+                selected_staged_data_name_tlc = st.selectbox(
+                    "从暂存区选择数据集:",
+                    options=staged_data_options_tlc,
+                    index=default_tlc_idx,
+                    key="tlc_own_selectbox_main"
+                )
+
+                selected_staged_df_tlc = None
+
+                if selected_staged_data_name_tlc:
+                    selected_staged_df_tlc = st.session_state.staged_data[selected_staged_data_name_tlc]['df'].copy()
+                    st.caption(f"已选择数据集: **{selected_staged_data_name_tlc}** (形状: {selected_staged_df_tlc.shape})")
+                    
+                    # 更新session_state以供 time_lag_corr_tab.py 使用
+                    # 检查数据集是否真的改变了，避免不必要的 session_state 重写和可能的 rerun
+                    if st.session_state.get('tlc_own_selected_df_name') != selected_staged_data_name_tlc:
+                        st.session_state.tlc_own_selected_df = selected_staged_df_tlc
+                        st.session_state.tlc_own_selected_df_name = selected_staged_data_name_tlc
+                        # 当数据集改变时，相关的状态将在 time_lag_corr_tab.py 内部通过比较新的 df_name 和旧的 df_name 来重置
+                        # print(f"[Dashboard LeadLag] TLC own dataset changed to {selected_staged_data_name_tlc}. TLC tab will handle state resets.") # 移除debug打印
+                        # No explicit rerun here needed, as display_time_lag_corr_tab will be called with updated session state.
+                        # If selectbox change itself causes a rerun (Streamlit default for some widgets if key changes or on_change is set), that's fine.
+                else:
+                    # 清理, 如果之前有选择但现在没有
+                    if 'tlc_own_selected_df' in st.session_state:
+                        del st.session_state.tlc_own_selected_df
+                    if 'tlc_own_selected_df_name' in st.session_state:
+                        del st.session_state.tlc_own_selected_df_name
+
+                # --- 结束新增 ---
+
+                # 获取当前为本标签页选择的数据
+                current_selected_df_for_tlc = st.session_state.get('tlc_own_selected_df')
+                current_selected_df_name_for_tlc = st.session_state.get('tlc_own_selected_df_name')
+
+                if current_selected_df_for_tlc is not None and not current_selected_df_for_tlc.empty:
+                    try:
+                        # --- <<< 修改：调用新的综合分析函数 >>> ---
+                        display_combined_lead_lag_analysis_tab(st, st.session_state) 
+                        # --- <<< 结束修改 >>> ---
+                        
+                    except Exception as e_lead_lag_tab: # <<< 可以考虑将此 try-except 移入新的前端模块内部，或者保持通用性
+                        st.error(f"加载综合领先滞后分析模块时出错: {e_lead_lag_tab}")
+                        import traceback
+                        st.error(traceback.format_exc())
+                else:
+                    st.warning("请在上方选择一个暂存数据集以进行综合领先滞后分析。") # <<< 更新警告信息
+                    # 清理旧的依赖于 correlation_selected_df 的 tlc_df, tlc_df_name (如果它们意外存在)
+                    if 'tlc_df' in st.session_state: # old key used previously
+                        del st.session_state['tlc_df']
+                    if 'tlc_df_name' in st.session_state: # old key used previously
+                        del st.session_state['tlc_df_name']
+
+        else:
+            st.error("数据探索的子模块配置错误（应包含三个主标签页）。")
+
+    else:
+        st.info("请在左侧选择一个应用工具。")
+
+else:
+    st.error("主模块选择无效或未实现。")
 
 # (End of script) 
