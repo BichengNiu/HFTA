@@ -308,7 +308,7 @@ def run_tuning(external_data=None, external_target_variable=None, external_selec
             print(f"错误: 无法根据 TRAIN_END_DATE ('{TRAIN_END_DATE}') 自动计算验证期开始日期: {e}")
             # 可以选择设置默认值或退出
             if log_file and not log_file.closed: log_file.close()
-            sys.exit("错误: 无法确定验证期开始日期")
+            raise SystemExit("错误: 无法确定验证期开始日期")
         # --- 结束新增 ---
 
         script_start_time = time.time()
@@ -568,7 +568,7 @@ def run_tuning(external_data=None, external_target_variable=None, external_selec
         if all_data_aligned_weekly is None or all_data_aligned_weekly.empty:
             logger.error("数据准备失败或返回空数据框。退出调优。")
             if log_file and not log_file.closed: log_file.close()
-            sys.exit(1)
+            raise SystemExit(1)
 
         print(f"数据准备模块成功返回处理后的数据. Shape: {all_data_aligned_weekly.shape}")
         
@@ -576,7 +576,7 @@ def run_tuning(external_data=None, external_target_variable=None, external_selec
         if TARGET_VARIABLE not in all_variable_names:
             print(f"错误: 目标变量 {TARGET_VARIABLE} 不在合并后的数据中。")
             if log_file and not log_file.closed: log_file.close()
-            sys.exit(1)
+            raise SystemExit(1)
         
         initial_variables = sorted(all_variable_names)
         print(f"\n初始变量组 ({len(initial_variables)}): {initial_variables[:10]}...") # Print only first few
@@ -600,7 +600,7 @@ def run_tuning(external_data=None, external_target_variable=None, external_selec
         if not var_type_map:
             print(f"错误: 无法从 Excel \t'{EXCEL_DATA_FILE}\t' (Sheet: \t'{TYPE_MAPPING_SHEET}\t') 加载必要的类型映射。")
             if log_file and not log_file.closed: log_file.close()
-            sys.exit(1)
+            raise SystemExit(1)
         print(f"\n[EARLY CHECK 2] Mappings loaded. Type map size: {len(var_type_map)}, Industry map size: {len(var_industry_map)}")
         print("-"*30)
 
@@ -640,7 +640,7 @@ def run_tuning(external_data=None, external_target_variable=None, external_selec
         except Exception as e:
             print(f"错误: 计算原始目标变量统计量失败: {e}")
             if log_file and not log_file.closed: log_file.close()
-            sys.exit(1)
+            raise SystemExit(1)
         print("-"*30)
 
         # ... (Consecutive NaN check remains the same) ...
@@ -1103,16 +1103,16 @@ def run_tuning(external_data=None, external_target_variable=None, external_selec
                     log_file.write(f"最佳评分 (HR, -RMSE): {best_score_stage1}\n")
                     log_file.write(f"最终预测变量数量: {num_predictors_stage1}\n") # <-- 修改日志
             else:
-                    print("错误: 阶段 1 (全局筛选) 未能找到有效的变量集和评分。无法继续。") # <-- 修改打印
-                    if log_file and not log_file.closed: log_file.close()
-                    sys.exit(1)
+                print("错误: 阶段 1 (全局筛选) 未能找到有效的变量集和评分。无法继续。") # <-- 修改打印
+                if log_file and not log_file.closed: log_file.close()
+                raise SystemExit(1)
 
         except Exception as e_select:
             print(f"阶段 1 全局变量筛选过程中发生严重错误: {e_select}\n") # <-- 修改打印
             traceback.print_exc()
             print("错误: 阶段 1 失败，无法继续。")
             if log_file and not log_file.closed: log_file.close()
-            sys.exit(1)
+            raise SystemExit(1)
         print("-" * 30)
         # --- <<< 结束阶段 1 修改 >>> ---
 
@@ -1585,7 +1585,7 @@ def run_tuning(external_data=None, external_target_variable=None, external_selec
             traceback.print_exc()
             print("错误: 阶段 2 失败，无法继续。")
             if log_file and not log_file.closed: log_file.close()
-            sys.exit(1)
+            raise SystemExit(1)
         print("-" * 30)
         # --- <<< 结束阶段 2 >>> --- 
 

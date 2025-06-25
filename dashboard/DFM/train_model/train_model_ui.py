@@ -1784,7 +1784,7 @@ def render_dfm_train_model_tab(st_instance, session_state):
             # 使用动态key确保内容更新
             log_display_key = f"dfm_log_display_{len(current_log)}_{hash(log_content) % 10000}"
             st_instance.text_area(
-                "", 
+                "训练日志内容", 
                 value=log_content, 
                 height=120, 
                 disabled=True, 
