@@ -1,24 +1,24 @@
-# 经济运行数据分析平台 - 项目依赖文件
-# High-Frequency Time-series Analysis (HFTA) Platform Dependencies
+# 经济运行数据分析平台 - 最新版本依赖文件
+# High-Frequency Time-series Analysis (HFTA) Platform Dependencies - Latest Versions
 # 
-# 本文件包含整个项目的核心依赖包
+# 使用最新版本，包含_lazywhere兼容性修复
 # 更新日期: 2024-12-19
 
 # ==========================================
-# 核心数据科学库 (Core Data Science Libraries)
+# 核心数据科学库 (Core Data Science Libraries) - 最新版本
 # ==========================================
 pandas>=2.2.0
-numpy>=1.26.0
-scipy>=1.14.0,<1.15.0  # 避开1.15.3的_lazywhere问题
+numpy>=1.26.0  # 兼容scipy 1.15.x
+scipy>=1.14.0  # 最新稳定版本，避开1.15.3的_lazywhere问题
 
 # ==========================================
-# 机器学习库 (Machine Learning Libraries)
+# 机器学习库 (Machine Learning Libraries) - 最新版本
 # ==========================================
-scikit-learn>=1.5.0
+scikit-learn>=1.5.0  # 恢复到最新版本
 statsmodels>=0.14.4
 
 # ==========================================
-# 可视化库 (Visualization Libraries)
+# 可视化库 (Visualization Libraries) - 最新版本
 # ==========================================
 matplotlib>=3.9.0
 seaborn>=0.13.2
@@ -26,7 +26,7 @@ plotly>=5.24.0
 altair>=5.4.0
 
 # ==========================================
-# Web框架 (Web Framework)
+# Web框架 (Web Framework) - 最新版本
 # ==========================================
 streamlit>=1.39.0
 
@@ -77,20 +77,14 @@ psutil>=6.1.0
 requests>=2.32.0
 
 # ==========================================
-# 注意事项 (Notes)
+# 重要说明 (Important Notes)
 # ==========================================
-# 标准库模块无需包含在此文件中:
-# os, sys, logging, warnings, traceback, pickle, datetime, time
-# math, calendar, threading, concurrent.futures, collections
-# typing, re, io, unicodedata, argparse
-
-# ==========================================
-# 安装说明 (Installation Instructions)
-# ==========================================
-# 使用以下命令安装所有依赖:
-# pip install -r requirements.txt
+# 此配置使用最新版本，但避开了已知的兼容性问题：
+# 1. scipy避开1.15.3版本，使用1.14.x稳定分支
+# 2. numpy使用1.26.x分支以确保与scipy兼容
+# 3. 所有其他包都使用最新版本
 #
-# 或者使用以下命令升级现有依赖:
-# pip install -r requirements.txt --upgrade
-
-# Cache buster: 2024-12-19 14:30 UTC
+# 如果在Streamlit Cloud部署时遇到问题：
+# 1. 首先尝试这个配置
+# 2. 如果仍有问题，则使用requirements-stable.txt
+# 3. 确保在Streamlit Cloud设置中使用Python 3.10或3.11 

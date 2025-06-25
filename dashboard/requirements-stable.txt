@@ -1,96 +1,83 @@
-# 经济运行数据分析平台 - 项目依赖文件
-# High-Frequency Time-series Analysis (HFTA) Platform Dependencies
+# 经济运行数据分析平台 - 稳定版依赖文件
+# High-Frequency Time-series Analysis (HFTA) Platform Dependencies - Stable Version
 # 
-# 本文件包含整个项目的核心依赖包
+# 此文件包含经过测试的稳定版本组合，避免部署时的兼容性问题
 # 更新日期: 2024-12-19
 
 # ==========================================
-# 核心数据科学库 (Core Data Science Libraries)
+# 核心数据科学库 (Core Data Science Libraries) - 稳定版本
 # ==========================================
-pandas>=2.2.0
-numpy>=1.26.0
-scipy>=1.14.0,<1.15.0  # 避开1.15.3的_lazywhere问题
+pandas==2.0.3
+numpy==1.24.3
+scipy==1.11.4
 
 # ==========================================
-# 机器学习库 (Machine Learning Libraries)
+# 机器学习库 (Machine Learning Libraries) - 稳定版本
 # ==========================================
-scikit-learn>=1.5.0
-statsmodels>=0.14.4
+scikit-learn==1.3.2
+statsmodels==0.14.1
 
 # ==========================================
 # 可视化库 (Visualization Libraries)
 # ==========================================
-matplotlib>=3.9.0
-seaborn>=0.13.2
-plotly>=5.24.0
-altair>=5.4.0
+matplotlib==3.7.2
+seaborn==0.12.2
+plotly==5.17.0
+altair==5.1.2
 
 # ==========================================
 # Web框架 (Web Framework)
 # ==========================================
-streamlit>=1.39.0
+streamlit==1.28.1
 
 # ==========================================
 # 文件处理 (File Handling)
 # ==========================================
-openpyxl>=3.1.5
+openpyxl==3.1.2
 
 # ==========================================
 # 性能优化 (Performance and Optimization)
 # ==========================================
-numba>=0.60.0
-joblib>=1.4.0
+numba==0.58.1
+joblib==1.3.2
 
 # ==========================================
 # 进度条 (Progress Bars)
 # ==========================================
-tqdm>=4.66.5
+tqdm==4.66.1
 
 # ==========================================
 # 时间序列分析 (Time Series Analysis)
 # ==========================================
-fastdtw>=0.3.4
+fastdtw==0.3.4
 
 # ==========================================
 # 日期时间工具 (Date/Time Utilities)
 # ==========================================
-python-dateutil>=2.9.0
+python-dateutil==2.8.2
 
 # ==========================================
 # 卡尔曼滤波 (Kalman Filter for DFM)
 # ==========================================
-filterpy>=1.4.5
+filterpy==1.4.5
 
 # ==========================================
 # 图像处理 (Image Processing)
 # ==========================================
-pillow>=11.0.0
+pillow==10.0.1
 
 # ==========================================
 # 系统监控 (System Monitoring)
 # ==========================================
-psutil>=6.1.0
+psutil==5.9.6
 
 # ==========================================
 # HTTP请求 (HTTP Requests)
 # ==========================================
-requests>=2.32.0
+requests==2.31.0
 
 # ==========================================
-# 注意事项 (Notes)
+# 使用说明 (Usage Instructions)
 # ==========================================
-# 标准库模块无需包含在此文件中:
-# os, sys, logging, warnings, traceback, pickle, datetime, time
-# math, calendar, threading, concurrent.futures, collections
-# typing, re, io, unicodedata, argparse
-
-# ==========================================
-# 安装说明 (Installation Instructions)
-# ==========================================
-# 使用以下命令安装所有依赖:
-# pip install -r requirements.txt
-#
-# 或者使用以下命令升级现有依赖:
-# pip install -r requirements.txt --upgrade
-
-# Cache buster: 2024-12-19 14:30 UTC
+# 如果主要的requirements.txt导致兼容性问题，使用此文件:
+# pip install -r requirements-stable.txt 
